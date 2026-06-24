@@ -2118,7 +2118,7 @@ HWND hTips = CreateWindowExW(
     L"--------------------------------------------------------------------------------\r\n"
     L"AUTO TUNE\r\n"
     L"Automatically raises Max Force to eliminate clipping.\r\n"
-    L"It will NEVER lower Max Force (will not weaken the wheel).\r\n"
+    L"It will NEVER lower Max Force (will not strengthen the wheel).\r\n"
     L"Assign a SimHub button binding to toggle Auto Tune on/off from the car.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
     L"FFB EFFECTS\r\n"
