@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Vendored from the vJoy SDK (feeder interface) by Shaul Eizikovich.
+// Upstream project: http://vjoystick.sourceforge.net   (provided "AS IS").
+// See public.h for the upstream copyright notice and CREDITS.md for provenance.
+// Keep local changes minimal; prefer updating from upstream.
+// ---------------------------------------------------------------------------
 // The following ifdef block is the standard way of creating macros which make exporting 
 // from a DLL simpler. All files within this DLL are compiled with the VJOYINTERFACE_EXPORTS
 // symbol defined on the command line. this symbol should not be defined on any project

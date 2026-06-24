@@ -111,6 +111,17 @@ enum ffbType {
     FFBTYPE_GAME_720,
     FFBTYPE_UNKNOWN
 };
+
+// Default settings, used whenever no saved/valid value is available.
+// Single source of truth so the generic-settings, registry, and per-car
+// INI read paths stay in sync. DEFAULT_FFB_TYPE is a vJoy-free mode so it is
+// always safe to fall back to even when vJoy is unavailable.
+constexpr int   DEFAULT_FFB_TYPE       = FFBTYPE_IRFFB_360;
+constexpr int   DEFAULT_MAX_FORCE      = 30;
+constexpr float DEFAULT_BUMPS_FACTOR   = 5.0f;
+constexpr float DEFAULT_DAMPING_FACTOR = 5.0f;
+constexpr float DEFAULT_FFB_EFFECTS    = 50.0f;
+constexpr bool  DEFAULT_AUTO_TUNE      = true;
  
 
 typedef struct sWins {

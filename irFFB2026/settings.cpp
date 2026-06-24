@@ -83,6 +83,18 @@ Settings::Settings() {
     memset(ffdevices, 0, MAX_FFB_DEVICES * sizeof(GUID));
     ffdeviceIdx = 0;
     devGuid = GUID_NULL;
+
+    // Initialize all validated settings to known-good defaults. The setters
+    // early-return without assigning when handed an out-of-range value, so a
+    // corrupt/out-of-range registry or INI value would otherwise leave these
+    // members indeterminate. Valid stored values overwrite these on load.
+    ffbType         = DEFAULT_FFB_TYPE;
+    maxForce        = DEFAULT_MAX_FORCE;
+    scaleFactor     = (float)DI_MAX / (float)DEFAULT_MAX_FORCE;
+    bumpsFactor     = DEFAULT_BUMPS_FACTOR;
+    dampingFactor   = DEFAULT_DAMPING_FACTOR;
+    FFBEffectsLevel = DEFAULT_FFB_EFFECTS;
+    autoTune        = DEFAULT_AUTO_TUNE;
 }
 
 void Settings::setDevWnd(HWND wnd) { devWnd = wnd; }
@@ -173,7 +185,7 @@ bool Settings::isFfbDevicePresent() {
 }
 
 void Settings::setFfbType(int type) {
-    if (type >= FFBTYPE_UNKNOWN)
+    if (type < 0 || type >= FFBTYPE_UNKNOWN)
         return;
 
     ffbType = type;
@@ -235,6 +247,8 @@ bool Settings::setDampingFactor(float factor, HWND wnd) {
 
 
 bool Settings::setFFBEffectsLevel(float factor, HWND wnd) {
+    if (factor < 0.0f || factor > MAX_EFFECTS_STRENGTH)
+        return false;
     FFBEffectsLevel =  (float)factor;
 
     // Recompute cached values only when slider actually changes
@@ -321,25 +335,25 @@ void Settings::readGenericSettings() {
     HKEY key = getSettingsRegKey();
 
     if (key == NULL) {
-        setFfbType(FFBTYPE_GAME_360);
-        setMaxForce(30, (HWND)-1);
-        setBumpsFactor(5.0f, (HWND)-1);
-        setDampingFactor(5.0f, (HWND)-1);
-        setFFBEffectsLevel(50.0f, (HWND)-1);
-        setAutoTune(true);
+        setFfbType(DEFAULT_FFB_TYPE);
+        setMaxForce(DEFAULT_MAX_FORCE, (HWND)-1);
+        setBumpsFactor(DEFAULT_BUMPS_FACTOR, (HWND)-1);
+        setDampingFactor(DEFAULT_DAMPING_FACTOR, (HWND)-1);
+        setFFBEffectsLevel(DEFAULT_FFB_EFFECTS, (HWND)-1);
+        setAutoTune(DEFAULT_AUTO_TUNE);
        
 
 
         return;
     }
 
-    setFfbType(getRegSetting(key, L"ffb", FFBTYPE_IRFFB_360));
+    setFfbType(getRegSetting(key, L"ffb", DEFAULT_FFB_TYPE));
 
-    setMaxForce(getRegSetting(key, L"maxForce", 30), (HWND)-1);
-    setDampingFactor(getRegSetting(key, L"dampingFactor", 5.0f), (HWND)-1);
-    setBumpsFactor(getRegSetting(key, L"bumpsFactor", 5.0f), (HWND)-1);
-    setFFBEffectsLevel(getRegSetting(key, L"FFBEffectsLevel", 50.0f), (HWND)-1);
-    setAutoTune(getRegSetting(key, L"autoTune", true));
+    setMaxForce(getRegSetting(key, L"maxForce", DEFAULT_MAX_FORCE), (HWND)-1);
+    setDampingFactor(getRegSetting(key, L"dampingFactor", DEFAULT_DAMPING_FACTOR), (HWND)-1);
+    setBumpsFactor(getRegSetting(key, L"bumpsFactor", DEFAULT_BUMPS_FACTOR), (HWND)-1);
+    setFFBEffectsLevel(getRegSetting(key, L"FFBEffectsLevel", DEFAULT_FFB_EFFECTS), (HWND)-1);
+    setAutoTune(getRegSetting(key, L"autoTune", DEFAULT_AUTO_TUNE));
     
    
     RegCloseKey(key);
@@ -405,12 +419,20 @@ void Settings::readSettingsForCar(char* car, char* track) {
     std::ifstream iniFile(path);
     std::string line;
 
+    if (!iniFile.is_open()) {
+        // No per-car INI yet (or it can't be read) - keep the settings already
+        // loaded by readGenericSettings rather than silently zeroing them out.
+        text(L"Could not open settings INI; keeping current settings");
+        delete[] path;
+        return;
+    }
+
 
 
     char carName[MAX_CAR_NAME];
     char trackName[MAX_TRACK_NAME];
-    int type = 0, max = 30, useDDwheel = 0, autoTuneInt = 0;
-    float  bumps = 5.0f, damping = 5.0f, FFBEffectsLevel = 50.f;
+    int type = DEFAULT_FFB_TYPE, max = DEFAULT_MAX_FORCE, useDDwheel = 0, autoTuneInt = DEFAULT_AUTO_TUNE ? 1 : 0;
+    float  bumps = DEFAULT_BUMPS_FACTOR, damping = DEFAULT_DAMPING_FACTOR, FFBEffectsLevel = DEFAULT_FFB_EFFECTS;
     
     int foundCarTrack = 0;
 
@@ -468,21 +490,28 @@ void Settings::readSettingsForCar(char* car, char* track) {
  //  text(L"readSettings: scanned in track %s", trackName);
 
 
-    //If vJoy is not ready but reading in a mode that requires vjoy, setting irFFB mode 360
-    if (vJoyResult = true) {
-           setFfbType(type); 
-    }
-    else {
-        setFfbType(FFBTYPE_IRFFB_360);
-    }
+    // Validate the saved FFB type; fall back to a safe default if the INI is corrupt.
+    if (type < 0 || type >= FFBTYPE_UNKNOWN)
+        type = DEFAULT_FFB_TYPE;
 
- 
-    setMaxForce(max, (HWND)-1);    
-    setDampingFactor(damping, (HWND)-1);
-    setBumpsFactor(bumps, (HWND)-1);
-    setFFBEffectsLevel(FFBEffectsLevel, (HWND)-1);
-    setUseDDWheel(useDDwheel);
-    setAutoTune((int)autoTuneInt);
+    // If the saved mode needs vJoy but vJoy isn't ready, fall back to the
+    // vJoy-free irFFB 360 Hz mode instead of loading an unusable Game mode.
+    // (Previously this was `if (vJoyResult = true)` - an assignment that made
+    // the fallback dead code and always applied the saved type.)
+    const bool needsVjoy = (type == FFBTYPE_GAME_360 || type == FFBTYPE_GAME_720);
+    if (needsVjoy && !vJoyResult)
+        setFfbType(FFBTYPE_IRFFB_360);
+    else
+        setFfbType(type);
+
+    // Route every applied value through the validating setters; if a parsed
+    // value is out of range, fall back to the default rather than applying garbage.
+    if (!setMaxForce(max, (HWND)-1))                    setMaxForce(DEFAULT_MAX_FORCE, (HWND)-1);
+    if (!setDampingFactor(damping, (HWND)-1))           setDampingFactor(DEFAULT_DAMPING_FACTOR, (HWND)-1);
+    if (!setBumpsFactor(bumps, (HWND)-1))               setBumpsFactor(DEFAULT_BUMPS_FACTOR, (HWND)-1);
+    if (!setFFBEffectsLevel(FFBEffectsLevel, (HWND)-1)) setFFBEffectsLevel(DEFAULT_FFB_EFFECTS, (HWND)-1);
+    setUseDDWheel(useDDwheel != 0);
+    setAutoTune(autoTuneInt != 0);
 
   
    
