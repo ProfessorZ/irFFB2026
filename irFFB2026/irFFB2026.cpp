@@ -1454,6 +1454,11 @@ int APIENTRY wWinMain(
 
             // NEW: Precompute scaled forces as early as possible (only once per frame)
             __declspec(align(16)) float scaledForces[MAX_ST_SAMPLES];
+
+            // Per-sample steering torque falls back to the scalar SteeringWheelTorque
+            // when the _ST telemetry is absent (swTorqueST == nullptr), so the indexed
+            // reads below never dereference a null pointer (cf. the vel_* null checks).
+            const float swTorqueScalar = swTorque ? *swTorque : 0.0f;
     // ────────────────────────────────────────────────────────────────
     // DOUBLE-BUFFER: Choose the buffer to WRITE to (the one NOT currently active)
     // ────────────────────────────────────────────────────────────────
@@ -1720,7 +1725,7 @@ int APIENTRY wWinMain(
                 // Precompute scaledForces using the NEW back-buffer values
                     // (this ensures scaledForces are consistent with what consumers will see)
                 for (int i = 0; i <= STmaxIdx; i++) {
-                    float total = swTorqueST[i] + suspForceST[writeBuf][i] + yawForce[writeBuf][i];
+                    float total = (swTorqueST ? swTorqueST[i] : swTorqueScalar) + suspForceST[writeBuf][i] + yawForce[writeBuf][i];
                     scaledForces[i] = (float)scaleTorque(total);
                 }
 
@@ -1795,7 +1800,7 @@ int APIENTRY wWinMain(
             case FFBTYPE_IRFFB_720: {
 ;
 
-                float diff = (swTorqueST[0] - lastTorque) / 2.0f;
+                float diff = ((swTorqueST ? swTorqueST[0] : swTorqueScalar) - lastTorque) / 2.0f;
 
                 float sdiff = (suspForceST[writeBuf][0] - lastSuspForce) / 2.0f;
 
@@ -1816,7 +1821,7 @@ int APIENTRY wWinMain(
                 for (int i = 1; i < iMax; i++) {
                     int idx = i >> 1;
                     if (i & 1) {
-                        diff = (swTorqueST[idx + 1] - swTorqueST[idx]) / 2.0f;
+                        diff = ((swTorqueST ? swTorqueST[idx + 1] : swTorqueScalar) - (swTorqueST ? swTorqueST[idx] : swTorqueScalar)) / 2.0f;
 
                         sdiff = (suspForceST[writeBuf][idx + 1] - suspForceST[writeBuf][idx]) / 2.0f;
                         force = (int)(scaledForces[idx] + diff + sdiff);
@@ -1841,7 +1846,7 @@ int APIENTRY wWinMain(
                 sleepSpinUntil(&start, 0, 1380 * (iMax + 1));
                 setFFB(force);
 
-                lastTorque = swTorqueST[STmaxIdx];
+                lastTorque = (swTorqueST ? swTorqueST[STmaxIdx] : swTorqueScalar);
 
                 lastSuspForce = suspForceST[writeBuf][STmaxIdx];
             }
