@@ -83,6 +83,18 @@ Settings::Settings() {
     memset(ffdevices, 0, MAX_FFB_DEVICES * sizeof(GUID));
     ffdeviceIdx = 0;
     devGuid = GUID_NULL;
+
+    // Initialize all validated settings to known-good defaults. The setters
+    // early-return without assigning when handed an out-of-range value, so a
+    // corrupt/out-of-range registry or INI value would otherwise leave these
+    // members indeterminate. Valid stored values overwrite these on load.
+    ffbType         = DEFAULT_FFB_TYPE;
+    maxForce        = DEFAULT_MAX_FORCE;
+    scaleFactor     = (float)DI_MAX / (float)DEFAULT_MAX_FORCE;
+    bumpsFactor     = DEFAULT_BUMPS_FACTOR;
+    dampingFactor   = DEFAULT_DAMPING_FACTOR;
+    FFBEffectsLevel = DEFAULT_FFB_EFFECTS;
+    autoTune        = DEFAULT_AUTO_TUNE;
 }
 
 void Settings::setDevWnd(HWND wnd) { devWnd = wnd; }

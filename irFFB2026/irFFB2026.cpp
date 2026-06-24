@@ -428,7 +428,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         
 
         // ────────────────────────────────────────────────────────────────
-        // Read ffbMag safely — add acquire fence for visibility of main-thread writes
+        // Read ffbMag safely — the acquire load makes prior main-thread writes visible
         // ────────────────────────────────────────────────────────────────
         int currentFfbMag = ffbMag.load(std::memory_order_acquire);                           // Local copy — safe now
 
