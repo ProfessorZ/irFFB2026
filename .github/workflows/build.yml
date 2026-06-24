@@ -1,0 +1,26 @@
+name: Build
+
+on:
+  push:
+    branches: [ master, "claude/**" ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release|Win32
+        run: msbuild irFFB2026.sln /p:Configuration=Release /p:Platform=Win32 /m /nologo /v:minimal
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: irFFB2026
+          path: irFFB2026/Release/irFFB2026.exe
