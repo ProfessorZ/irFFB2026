@@ -130,7 +130,7 @@ char trackName[MAX_TRACK_NAME];
 const int MAX_ST_SAMPLES = 32;
 
 volatile bool wheelAndEffectReady = false;
-bool firstAfterReacquire = true;
+std::atomic<bool> firstAfterReacquire(true);
 
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
@@ -413,17 +413,15 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             d = 0.0f;
         }
 
-        // One-time post-reacquire reset (firstAfterReacquire is file-scope,
-        // reset to true by reacquireDIDevice() and on session entry)
-        if (firstAfterReacquire) {
+        // One-time post-reacquire reset. exchange(false) atomically checks-and-clears,
+        // so the reset runs exactly once even if multiple threads race here.
+        if (firstAfterReacquire.exchange(false)) {
             pforce.lOffset = 0;
             EnterCriticalSection(&effectCrit);
             if (effect) {
                 effect->SetParameters(&dieff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
             }
             LeaveCriticalSection(&effectCrit);
-            firstAfterReacquire = false;
-           // debug(L"Applied first post-reacquire reset to pforce.lOffset");
         }
 
         

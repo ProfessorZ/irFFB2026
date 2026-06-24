@@ -266,7 +266,7 @@ bool Settings::setFFBEffectsLevel(float factor, HWND wnd) {
     if (wnd != FFBEffectsLevelWnd->trackbar)
         SendMessage(FFBEffectsLevelWnd->trackbar, TBM_SETPOS, TRUE, (int)(factor));  // Scale to 0�100
     if (wnd != FFBEffectsLevelWnd->value) {
-        swprintf_s(strbuf, L"%.1f", factor);  // Display as 0�100
+        swprintf_s(strbuf, L"%.1f", factor);  // Display as 0-100�100
         SendMessage(FFBEffectsLevelWnd->value, WM_SETTEXT, NULL, LPARAM(strbuf));
     }
     // Save to INI or reg if needed
@@ -320,7 +320,7 @@ void Settings::readRegSettings(char* car, char* track) {
             devGuid = GUID_NULL;
     setStartMinimised(getRegSetting(key, L"startMinimised", false));
 
-    // Car-specific is now always on � load if car/track available
+    // Car-specific is now always on -� load if car/track available
     if (car && car[0] != 0 && track && track[0] != 0) {
         readSettingsForCar(car, track);
     }
