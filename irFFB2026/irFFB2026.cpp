@@ -34,8 +34,6 @@ Users were filling up hard drives leaving the debug on all the time and slowing 
 */ 
 
 
-//This is a git test
-//
 
 #include "irFFB2026.h"
 #include "version.h"

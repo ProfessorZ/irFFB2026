@@ -61,3 +61,8 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Treat images and the UTF-16 resource script as binary (no EOL/encoding munging)
+*.png binary
+*.ico binary
+*.rc  binary
