@@ -2117,8 +2117,10 @@ HWND hTips = CreateWindowExW(
     L"Keep FFB Effects above 0 while tuning Max Force.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
     L"AUTO TUNE\r\n"
-    L"Automatically raises Max Force to eliminate clipping.\r\n"
-    L"It will NEVER lower Max Force (will not strengthen the wheel).\r\n"
+    L"Raises Max Force to eliminate clipping.\r\n"
+    L"Recovers (lowers Max Force) once driving smoothly resumes after a spike.\r\n"
+    L"Gradually lowers Max Force during long stints as tire grip diminishes.\r\n"
+    L"Will never go below your manually set Max Force value.\r\n"
     L"Assign a SimHub button binding to toggle Auto Tune on/off from the car.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
     L"FFB EFFECTS\r\n"
@@ -3163,6 +3165,7 @@ inline void setFFB(int incomingForce)
         const int LAPS_TO_LEARN_STABLE = 3;
         const int RACING_SURFACE = 3;
         const int RAISE_STEP_NM = 2;
+        const int LOWER_STEP_NM = 1;
         const int MAX_SAFE_MAXFORCE = 60;
 
         // 1. Off-track detection – every frame (needs to catch surface changes quickly)
@@ -3295,10 +3298,32 @@ inline void setFFB(int incomingForce)
                 learnedStableMaxForce = activeMaxForce;
                 text(L"Stablized Max Force: %d after %d clean laps",
                     learnedStableMaxForce, consecutiveStableLaps);
-                // debug(L"Learned stable maxForce: %d after %d clean laps",
-                //     learnedStableMaxForce, consecutiveStableLaps);
             }
 
+            // Lower toward user's preferred value when stable (post-spike recovery
+            // and tire degradation adaptation: as grip drops, less force is generated,
+            // so we can lower Max Force to keep the wheel feeling strong)
+            if (!didRaiseThisFrame &&
+                activeMaxForce > userPreferredMaxForce &&
+                framesSinceAnyChange >= MIN_FRAMES_COOLDOWN * 2 &&
+                recentClipsInWindow == 0 &&
+                consecutiveStableLaps >= 1)
+            {
+                int candidate = max(activeMaxForce - LOWER_STEP_NM, userPreferredMaxForce);
+
+                settings.setMaxForce(candidate, (HWND)-1);
+                activeMaxForce = candidate;
+                lastKnownUserMax = activeMaxForce;
+
+                if (simHubConnectorStatus) updateSimHub();
+
+                text(L"Recovering Max Force to %d Nm", candidate);
+
+                framesSinceAnyChange = 0;
+                memset(clipWindow, 0, sizeof(clipWindow));
+                recentClipsInWindow = 0;
+                windowPos = 0;
+            }
 
         }
 
