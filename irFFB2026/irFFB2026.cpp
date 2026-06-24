@@ -1311,7 +1311,17 @@ int APIENTRY wWinMain(
 
 
             int swTorqueSTidx = irsdk_varNameToIndex("SteeringWheelTorque_ST");
-            STnumSamples = irsdk_getVarHeaderEntry(swTorqueSTidx)->count;
+            auto swTorqueSTHeader = (swTorqueSTidx >= 0) ? irsdk_getVarHeaderEntry(swTorqueSTidx) : nullptr;
+            STnumSamples = swTorqueSTHeader ? swTorqueSTHeader->count : 0;
+
+            // Guard against a missing/unexpected telemetry layout. STmaxIdx is used
+            // to index the fixed-size _ST buffers (suspForceST/yawForce/ffbForce are
+            // [2][DIRECT_INTERP_SAMPLES]); clamp so we never underflow to -1 (when
+            // the SDK reports 0 samples or the var is absent) or overrun those buffers.
+            if (STnumSamples < 1)
+                STnumSamples = 1;
+            if (STnumSamples > DIRECT_INTERP_SAMPLES)
+                STnumSamples = DIRECT_INTERP_SAMPLES;
             STmaxIdx = STnumSamples - 1;
 
             lastTorque = 0.0f;
@@ -1911,6 +1921,11 @@ ATOM MyRegisterClass(HINSTANCE hInstance) {
 }
 
 LRESULT CALLBACK EditWndProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR subId, DWORD_PTR rData) {
+
+    // Detach the subclass before the window is destroyed so the callback can't
+    // fire on a stale/invalid window handle during teardown.
+    if (msg == WM_NCDESTROY)
+        RemoveWindowSubclass(wnd, EditWndProc, subId);
 
     if (msg == WM_CHAR) {
 
