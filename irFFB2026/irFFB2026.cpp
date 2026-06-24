@@ -130,6 +130,7 @@ char trackName[MAX_TRACK_NAME];
 const int MAX_ST_SAMPLES = 32;
 
 volatile bool wheelAndEffectReady = false;
+bool firstAfterReacquire = true;
 
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
@@ -412,8 +413,8 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             d = 0.0f;
         }
 
-        // One-time post-reacquire reset
-        static bool firstAfterReacquire = true;
+        // One-time post-reacquire reset (firstAfterReacquire is file-scope,
+        // reset to true by reacquireDIDevice() and on session entry)
         if (firstAfterReacquire) {
             pforce.lOffset = 0;
             EnterCriticalSection(&effectCrit);
@@ -1404,8 +1405,8 @@ int APIENTRY wWinMain(
 
   
 
-                settings.bumpMaxForce(1);
-                settings.bumpMaxForce(-1);
+                resetForces();
+                firstAfterReacquire = true;
 
                 
 
@@ -3016,6 +3017,7 @@ void reacquireDIDevice() {
     }
     LeaveCriticalSection(&effectCrit);
     directInputStatus = 1;
+    firstAfterReacquire = true;
     wheelAndEffectReady = true;
     debug(L"Reacquire succeeded → readWheelThread polling resumed");
 }
@@ -3320,7 +3322,7 @@ inline void setFFB(int incomingForce)
                 learnedStableMaxForce == 0)
             {
                 learnedStableMaxForce = activeMaxForce;
-                text(L"Stablized Max Force: %d after %d clean laps",
+                text(L"Stabilized Max Force: %d after %d clean laps",
                     learnedStableMaxForce, consecutiveStableLaps);
             }
 
