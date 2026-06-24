@@ -1,0 +1,36 @@
+name: Build
+
+# Compile-gate the project on a Windows runner. This validates that the code,
+# the version resource (version.h -> irFFB.rc), and the linker inputs all build
+# cleanly. It does NOT exercise FFB behavior - that still requires a wheel + iRacing.
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Release | Win32
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # Release|Win32 is the canonical configuration: it is the only one with the
+      # link dependencies (dinput8/dxguid/shlwapi/comctl32/winhttp/...) wired up.
+      # dinput8.lib / dxguid.lib ship in the modern Windows SDK on the runner, so
+      # the legacy DXSDK library path is not needed.
+      - name: Build (Release|Win32)
+        run: msbuild irFFB2026.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=Win32
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: irFFB2026-Release-Win32
+          path: '**/irFFB2026.exe'
+          if-no-files-found: error

@@ -37,3 +37,23 @@ Key aspects of the implementation:
 - **Reliability improvements** — Robust DirectInput reacquire, lower CPU usage, no vJoy required in irFFB modes
 - **Enhanced FFB for Lighter Force Settings** — Enhanced FFB experience for people running lighter wheel force
 
+
+### Building
+
+irFFB2026 builds with **Visual Studio 2022** (v143 toolset, Windows 10/11 SDK,
+C++17). Open `irFFB2026.sln` and build the **Release|Win32** configuration. The
+legacy DirectX SDK is not required. See **[BUILDING.md](BUILDING.md)** for full
+prerequisites, the source-encoding notes, and versioning.
+
+### Documentation
+
+- **[BUILDING.md](BUILDING.md)** — build prerequisites and steps
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — threads, the FFB model, settings storage
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — workflow and testing expectations
+- **[CHANGELOG.md](CHANGELOG.md)** — release history
+- **[CREDITS.md](CREDITS.md)** — third-party code and licensing
+
+### License
+
+irFFB2026 is released under the **GNU General Public License v3.0** — see
+**[LICENSE](LICENSE)**.

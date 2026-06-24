@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Vendored from the vJoy SDK (feeder interface) by Shaul Eizikovich.
+// Upstream project: http://vjoystick.sourceforge.net   (provided "AS IS").
+// See public.h for the upstream copyright notice and CREDITS.md for provenance.
+// Keep local changes minimal; prefer updating from upstream.
+// ---------------------------------------------------------------------------
 // vJoyInterface.cpp : Defines the exported functions for the DLL application.
 //
 #include "stdafx.h"

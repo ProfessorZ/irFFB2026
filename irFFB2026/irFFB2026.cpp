@@ -34,10 +34,9 @@ Users were filling up hard drives leaving the debug on all the time and slowing 
 */ 
 
 
-//This is a git test
-//
 
 #include "irFFB2026.h"
+#include "version.h"
 #include "Settings.h"
 #include "shlwapi.h"
 #include "public.h"
@@ -147,14 +146,19 @@ __declspec(align(16)) volatile float suspForceST[2][DIRECT_INTERP_SAMPLES];
 
 // Atomic index telling consumers which buffer is currently active/front (0 or 1)
 
+// Publish protocol: the writer fills the back buffer (1 - activeBuffer) and then
+// stores activeBuffer with memory_order_release; consumers load it with
+// memory_order_acquire (directFFBThread). That release/acquire pair already
+// synchronizes the buffer contents, so the 'volatile' on the arrays above is
+// redundant for correctness and kept only to avoid touching the hot path here.
 std::atomic<int> activeBuffer(BUF_FRONT);  // Define and initialize here (use BUF_FRONT or 0 as starting value)
 
 
 
 bool onTrack = false, stopped = true, deviceChangePending = false, logiWheel = false;
 
-volatile int ffbMag = 0; //holds the FFB level that is used when writing direct to the DirectInput interface
-volatile bool nearStops = false;
+std::atomic<int> ffbMag{ 0 }; //holds the FFB level that is used when writing direct to the DirectInput interface
+std::atomic<bool> nearStops{ false };
 
 //using for setFFB
 int* trackSurface = nullptr, * currentLap = nullptr, * lapCompleted = nullptr;
@@ -373,7 +377,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         UpdateVJD(vjDev, (PVOID)&vjData);
 
         // Damping / velocity filtering (only when needed)
-        if (settings.getDampingFactor() != 0.0f || nearStops) {
+        if (settings.getDampingFactor() != 0.0f || nearStops.load(std::memory_order_relaxed)) {
             QueryPerformanceCounter(&time);
             if (lastTime.QuadPart != 0) {
                 elapsed.QuadPart = (time.QuadPart - lastTime.QuadPart) * 1000000LL;
@@ -399,7 +403,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
             d = ((fd[0] + fd[1]) + (fd[2] + fd[3]) + (fd[4] + fd[5])) / (float)DIRECT_INTERP_SAMPLES;
 
-            if (nearStops)
+            if (nearStops.load(std::memory_order_relaxed))
                 d *= DAMPING_MULTIPLIER_STOPS;
             else
                 d *= DAMPING_MULTIPLIER * settings.getDampingFactor();
@@ -424,10 +428,9 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         
 
         // ────────────────────────────────────────────────────────────────
-        // Read ffbMag safely — add acquire fence for visibility of main-thread writes
+        // Read ffbMag safely — the acquire load makes prior main-thread writes visible
         // ────────────────────────────────────────────────────────────────
-        std::atomic_thread_fence(std::memory_order_acquire);  // Ensure prior writes are visible
-        int currentFfbMag = ffbMag;                           // Local copy — safe now
+        int currentFfbMag = ffbMag.load(std::memory_order_acquire);                           // Local copy — safe now
 
         // Apply final offset
         pforce.lOffset = currentFfbMag + (int)d;
@@ -1311,7 +1314,17 @@ int APIENTRY wWinMain(
 
 
             int swTorqueSTidx = irsdk_varNameToIndex("SteeringWheelTorque_ST");
-            STnumSamples = irsdk_getVarHeaderEntry(swTorqueSTidx)->count;
+            auto swTorqueSTHeader = (swTorqueSTidx >= 0) ? irsdk_getVarHeaderEntry(swTorqueSTidx) : nullptr;
+            STnumSamples = swTorqueSTHeader ? swTorqueSTHeader->count : 0;
+
+            // Guard against a missing/unexpected telemetry layout. STmaxIdx is used
+            // to index the fixed-size _ST buffers (suspForceST/yawForce/ffbForce are
+            // [2][DIRECT_INTERP_SAMPLES]); clamp so we never underflow to -1 (when
+            // the SDK reports 0 samples or the var is absent) or overrun those buffers.
+            if (STnumSamples < 1)
+                STnumSamples = 1;
+            if (STnumSamples > DIRECT_INTERP_SAMPLES)
+                STnumSamples = DIRECT_INTERP_SAMPLES;
             STmaxIdx = STnumSamples - 1;
 
             lastTorque = 0.0f;
@@ -1359,7 +1372,7 @@ int APIENTRY wWinMain(
             // Also reset internal states
             resetForces();
 
-            ffbMag = 0;
+            ffbMag.store(0, std::memory_order_release);
             pforce.lOffset = 0;
 
         }
@@ -1441,6 +1454,11 @@ int APIENTRY wWinMain(
 
             // NEW: Precompute scaled forces as early as possible (only once per frame)
             __declspec(align(16)) float scaledForces[MAX_ST_SAMPLES];
+
+            // Per-sample steering torque falls back to the scalar SteeringWheelTorque
+            // when the _ST telemetry is absent (swTorqueST == nullptr), so the indexed
+            // reads below never dereference a null pointer (cf. the vel_* null checks).
+            const float swTorqueScalar = swTorque ? *swTorque : 0.0f;
     // ────────────────────────────────────────────────────────────────
     // DOUBLE-BUFFER: Choose the buffer to WRITE to (the one NOT currently active)
     // ────────────────────────────────────────────────────────────────
@@ -1707,7 +1725,7 @@ int APIENTRY wWinMain(
                 // Precompute scaledForces using the NEW back-buffer values
                     // (this ensures scaledForces are consistent with what consumers will see)
                 for (int i = 0; i <= STmaxIdx; i++) {
-                    float total = swTorqueST[i] + suspForceST[writeBuf][i] + yawForce[writeBuf][i];
+                    float total = (swTorqueST ? swTorqueST[i] : swTorqueScalar) + suspForceST[writeBuf][i] + yawForce[writeBuf][i];
                     scaledForces[i] = (float)scaleTorque(total);
                 }
 
@@ -1715,9 +1733,9 @@ int APIENTRY wWinMain(
 
             halfSteerMax = *steerMax / 2.0f;
             if (abs(halfSteerMax) < 8.0f && abs(*steer) > halfSteerMax - STOPS_MAXFORCE_RAD * 2.0f)
-                nearStops = true;
+                nearStops.store(true, std::memory_order_relaxed);
             else
-                nearStops = false;
+                nearStops.store(false, std::memory_order_relaxed);
 
             //If we are in vjoy/direct modes then we get out of here.  
             if (
@@ -1782,7 +1800,7 @@ int APIENTRY wWinMain(
             case FFBTYPE_IRFFB_720: {
 ;
 
-                float diff = (swTorqueST[0] - lastTorque) / 2.0f;
+                float diff = ((swTorqueST ? swTorqueST[0] : swTorqueScalar) - lastTorque) / 2.0f;
 
                 float sdiff = (suspForceST[writeBuf][0] - lastSuspForce) / 2.0f;
 
@@ -1803,7 +1821,7 @@ int APIENTRY wWinMain(
                 for (int i = 1; i < iMax; i++) {
                     int idx = i >> 1;
                     if (i & 1) {
-                        diff = (swTorqueST[idx + 1] - swTorqueST[idx]) / 2.0f;
+                        diff = ((swTorqueST ? swTorqueST[idx + 1] : swTorqueScalar) - (swTorqueST ? swTorqueST[idx] : swTorqueScalar)) / 2.0f;
 
                         sdiff = (suspForceST[writeBuf][idx + 1] - suspForceST[writeBuf][idx]) / 2.0f;
                         force = (int)(scaledForces[idx] + diff + sdiff);
@@ -1828,7 +1846,7 @@ int APIENTRY wWinMain(
                 sleepSpinUntil(&start, 0, 1380 * (iMax + 1));
                 setFFB(force);
 
-                lastTorque = swTorqueST[STmaxIdx];
+                lastTorque = (swTorqueST ? swTorqueST[STmaxIdx] : swTorqueScalar);
 
                 lastSuspForce = suspForceST[writeBuf][STmaxIdx];
             }
@@ -1911,6 +1929,11 @@ ATOM MyRegisterClass(HINSTANCE hInstance) {
 }
 
 LRESULT CALLBACK EditWndProc(HWND wnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR subId, DWORD_PTR rData) {
+
+    // Detach the subclass before the window is destroyed so the callback can't
+    // fire on a stale/invalid window handle during teardown.
+    if (msg == WM_NCDESTROY)
+        RemoveWindowSubclass(wnd, EditWndProc, subId);
 
     if (msg == WM_CHAR) {
 
@@ -2473,6 +2496,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
 
         case WM_INITDIALOG:
+            SetDlgItemTextW(hDlg, IDC_VERSION, L"irFFB2026 Version v" IRFFB_VERSION_WSTR);
             return (INT_PTR)TRUE;
 
         case WM_COMMAND:
@@ -3095,7 +3119,7 @@ inline void setFFB(int incomingForce)
 
 
 
-        ffbMag = processed;
+        ffbMag.store(processed, std::memory_order_release);
         return;
     }
     //debug(L"setFFB: clipping check");
@@ -3288,7 +3312,7 @@ inline void setFFB(int incomingForce)
         if (processed > IR_MAX) processed = IR_MAX;
         if (processed < -IR_MAX) processed = -IR_MAX;
 
-        ffbMag = processed;
+        ffbMag.store(processed, std::memory_order_release);
     }
     else {
 
@@ -3298,7 +3322,7 @@ inline void setFFB(int incomingForce)
             if (processed > IR_MAX) processed = IR_MAX;
             if (processed < -IR_MAX) processed = -IR_MAX;
 
-            ffbMag = processed;
+            ffbMag.store(processed, std::memory_order_release);
         }
 
     // Periodic SimHub report

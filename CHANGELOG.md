@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to **irFFB2026** are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+The version is defined in a single place — [`irFFB2026/version.h`](irFFB2026/version.h) —
+which feeds both the executable's version resource and the About dialog.
+
+## [Unreleased]
+
+## [1.2.2]
+
+### Fixed
+- Per-car settings no longer force a vJoy-only "Game" FFB mode when vJoy is
+  unavailable. A `=`/`==` typo (`if (vJoyResult = true)`) had made the safe
+  fallback to the vJoy-free irFFB 360 Hz mode unreachable.
+- Guarded steering-telemetry indexing (`STmaxIdx`) so a missing or zero-sample
+  `_ST` telemetry layout can no longer underflow to `-1` or overrun the
+  fixed-size shock/force buffers.
+- The settings INI is now validated on read: values are range-checked through
+  the existing setters and fall back to defaults instead of being applied
+  blindly, and a missing/unreadable INI keeps the current settings.
+- The slider edit-box subclass is removed on `WM_NCDESTROY`, preventing a
+  callback on a stale window handle during shutdown.
+
+### Changed
+- Cross-thread FFB state (`ffbMag`, `nearStops`) now uses `std::atomic` with
+  explicit memory ordering instead of `volatile`, fixing a real
+  visibility/synchronization gap between the telemetry and wheel threads.
+- Default setting values are now defined once (`DEFAULT_*` in `irFFB2026.h`)
+  and reused across the generic, registry, and per-car read paths.
+
+### Added
+- `version.h` as the single source of truth for the application version, wired
+  into the `.rc` version resource and the About dialog.
+- `LICENSE` (GPLv3), `CHANGELOG.md`, `CREDITS.md`, and build/architecture docs.
+
+## [1.2.1]
+
+- Enhanced FFB for lighter wheel-force settings.
+- Pacejka Magic Formula FFB model for self-aligning torque and vertical-load
+  effects, ultra-low-latency 360/720 Hz game modes, Auto Tune, SimHub
+  integration, and impact-force reduction.
