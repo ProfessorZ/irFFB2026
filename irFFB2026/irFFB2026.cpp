@@ -147,14 +147,19 @@ __declspec(align(16)) volatile float suspForceST[2][DIRECT_INTERP_SAMPLES];
 
 // Atomic index telling consumers which buffer is currently active/front (0 or 1)
 
+// Publish protocol: the writer fills the back buffer (1 - activeBuffer) and then
+// stores activeBuffer with memory_order_release; consumers load it with
+// memory_order_acquire (directFFBThread). That release/acquire pair already
+// synchronizes the buffer contents, so the 'volatile' on the arrays above is
+// redundant for correctness and kept only to avoid touching the hot path here.
 std::atomic<int> activeBuffer(BUF_FRONT);  // Define and initialize here (use BUF_FRONT or 0 as starting value)
 
 
 
 bool onTrack = false, stopped = true, deviceChangePending = false, logiWheel = false;
 
-volatile int ffbMag = 0; //holds the FFB level that is used when writing direct to the DirectInput interface
-volatile bool nearStops = false;
+std::atomic<int> ffbMag{ 0 }; //holds the FFB level that is used when writing direct to the DirectInput interface
+std::atomic<bool> nearStops{ false };
 
 //using for setFFB
 int* trackSurface = nullptr, * currentLap = nullptr, * lapCompleted = nullptr;
@@ -373,7 +378,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         UpdateVJD(vjDev, (PVOID)&vjData);
 
         // Damping / velocity filtering (only when needed)
-        if (settings.getDampingFactor() != 0.0f || nearStops) {
+        if (settings.getDampingFactor() != 0.0f || nearStops.load(std::memory_order_relaxed)) {
             QueryPerformanceCounter(&time);
             if (lastTime.QuadPart != 0) {
                 elapsed.QuadPart = (time.QuadPart - lastTime.QuadPart) * 1000000LL;
@@ -399,7 +404,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
             d = ((fd[0] + fd[1]) + (fd[2] + fd[3]) + (fd[4] + fd[5])) / (float)DIRECT_INTERP_SAMPLES;
 
-            if (nearStops)
+            if (nearStops.load(std::memory_order_relaxed))
                 d *= DAMPING_MULTIPLIER_STOPS;
             else
                 d *= DAMPING_MULTIPLIER * settings.getDampingFactor();
@@ -426,8 +431,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         // ────────────────────────────────────────────────────────────────
         // Read ffbMag safely — add acquire fence for visibility of main-thread writes
         // ────────────────────────────────────────────────────────────────
-        std::atomic_thread_fence(std::memory_order_acquire);  // Ensure prior writes are visible
-        int currentFfbMag = ffbMag;                           // Local copy — safe now
+        int currentFfbMag = ffbMag.load(std::memory_order_acquire);                           // Local copy — safe now
 
         // Apply final offset
         pforce.lOffset = currentFfbMag + (int)d;
@@ -1369,7 +1373,7 @@ int APIENTRY wWinMain(
             // Also reset internal states
             resetForces();
 
-            ffbMag = 0;
+            ffbMag.store(0, std::memory_order_release);
             pforce.lOffset = 0;
 
         }
@@ -1725,9 +1729,9 @@ int APIENTRY wWinMain(
 
             halfSteerMax = *steerMax / 2.0f;
             if (abs(halfSteerMax) < 8.0f && abs(*steer) > halfSteerMax - STOPS_MAXFORCE_RAD * 2.0f)
-                nearStops = true;
+                nearStops.store(true, std::memory_order_relaxed);
             else
-                nearStops = false;
+                nearStops.store(false, std::memory_order_relaxed);
 
             //If we are in vjoy/direct modes then we get out of here.  
             if (
@@ -3110,7 +3114,7 @@ inline void setFFB(int incomingForce)
 
 
 
-        ffbMag = processed;
+        ffbMag.store(processed, std::memory_order_release);
         return;
     }
     //debug(L"setFFB: clipping check");
@@ -3303,7 +3307,7 @@ inline void setFFB(int incomingForce)
         if (processed > IR_MAX) processed = IR_MAX;
         if (processed < -IR_MAX) processed = -IR_MAX;
 
-        ffbMag = processed;
+        ffbMag.store(processed, std::memory_order_release);
     }
     else {
 
@@ -3313,7 +3317,7 @@ inline void setFFB(int incomingForce)
             if (processed > IR_MAX) processed = IR_MAX;
             if (processed < -IR_MAX) processed = -IR_MAX;
 
-            ffbMag = processed;
+            ffbMag.store(processed, std::memory_order_release);
         }
 
     // Periodic SimHub report
