@@ -38,6 +38,7 @@ Users were filling up hard drives leaving the debug on all the time and slowing 
 //
 
 #include "irFFB2026.h"
+#include "version.h"
 #include "Settings.h"
 #include "shlwapi.h"
 #include "public.h"
@@ -2492,6 +2493,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
 
         case WM_INITDIALOG:
+            SetDlgItemTextW(hDlg, IDC_VERSION, L"irFFB2026 Version v" IRFFB_VERSION_WSTR);
             return (INT_PTR)TRUE;
 
         case WM_COMMAND:
