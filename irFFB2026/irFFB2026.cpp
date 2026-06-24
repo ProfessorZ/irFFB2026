@@ -130,6 +130,7 @@ char trackName[MAX_TRACK_NAME];
 const int MAX_ST_SAMPLES = 32;
 
 volatile bool wheelAndEffectReady = false;
+std::atomic<bool> firstAfterReacquire(true);
 
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
@@ -412,17 +413,15 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             d = 0.0f;
         }
 
-        // One-time post-reacquire reset
-        static bool firstAfterReacquire = true;
-        if (firstAfterReacquire) {
+        // One-time post-reacquire reset. exchange(false) atomically checks-and-clears,
+        // so the reset runs exactly once even if multiple threads race here.
+        if (firstAfterReacquire.exchange(false)) {
             pforce.lOffset = 0;
             EnterCriticalSection(&effectCrit);
             if (effect) {
                 effect->SetParameters(&dieff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
             }
             LeaveCriticalSection(&effectCrit);
-            firstAfterReacquire = false;
-           // debug(L"Applied first post-reacquire reset to pforce.lOffset");
         }
 
         
@@ -1404,8 +1403,8 @@ int APIENTRY wWinMain(
 
   
 
-                settings.bumpMaxForce(1);
-                settings.bumpMaxForce(-1);
+                resetForces();
+                firstAfterReacquire = true;
 
                 
 
@@ -2111,43 +2110,63 @@ HFONT hTipsFont = CreateFontW(
 HWND hTips = CreateWindowExW(
     WS_EX_CLIENTEDGE,
     L"EDIT",
-    L"                                                  Quick Tips\r\n"
+    L"                               Quick Tips\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Select your wheel and recalibrate the wheel in iRacing\r\n"
-    L"Configure in the following order for best results:\r\n"
-    L"(1) Mode, (2) Max Force,(3) FFB Effects, (4) Damping, (5) Bumps\r\n"
-    L"FFB Effects should be at a number greater than zero when setting Max Force.\r\n"
+    L"FIRST TIME SETUP\r\n"
+    L"1. Select your FFB device (steering wheel)\r\n"
+    L"2. Recalibrate your wheel inside iRacing\r\n"
+    L"3. Check \"Using A Direct Drive Wheel\" if applicable\r\n"
+    L"4. Tune in order: Mode -> Max Force -> FFB Effects -> Damping -> Bumps\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Game and irFFB modes will give you the same effects\r\n"
-    L"Game mode requires vjoy and has lower latency\r\n"
-    L"irFFB modes do not require vjoy but slightly higher latency\r\n"
-    L"Game modes are not available if vJoy is not running\r\n"
+    L"MODE  (FFB Source - Smoothing dropdown)\r\n"
+    L"Game mode:  Lower latency. Requires vJoy installed and running.\r\n"
+    L"irFFB mode: Slightly higher latency. No vJoy required.\r\n"
+    L"Both modes produce identical FFB effects.\r\n"
+    L"Smoothing: reduces high-frequency noise/buzz in the signal.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Max Force is wheel strength.\r\n"
-    L"Low number is stronger wheel. High number is weaker wheel.\r\n"
-    L"Lower the number until you get less than 1% of clipping but more than zero.\r\n"
-    L"Too low of a Max Force setting will cause clipping.\r\n"
-    L"Excessive clipping will cause wheel oscillation. Avoid wheel oscillation.\r\n"
+    L"DIRECT DRIVE WHEEL\r\n"
+    L"Tick this if you are using a direct drive wheel (e.g. Fanatec DD, Simucube,\r\n"
+    L"Moza, VRS). Adjusts force calculations for high-torque motors.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Auto Tune increases your Max Force setting to stop clipping.\r\n"
-    L"Auto Tune will NOT lower your Max Force setting (make the wheel stronger).\r\n"
-    L"Use SimHub AutoTune button binding to toggle Auto Tune on and off from car.\r\n"
+    L"MAX FORCE  (Stronger <-- slider --> Weaker)\r\n"
+    L"Sets the real-world torque value that equals 100% FFB output.\r\n"
+    L"Lower = stronger wheel feel.   Higher = weaker wheel feel.\r\n"
+    L"\r\n"
+    L"Tuning goal: lower until clipping is just above 0% (target: < 1%).\r\n"
+    L"  Too low  -> forces exceed limit -> clipping -> wheel oscillation (bad!)\r\n"
+    L"  Too high -> weak, disconnected steering feel\r\n"
+    L"\r\n"
+    L"Keep FFB Effects above 0 while tuning Max Force.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"FFB Effects controls how much of the seat-of-the-pants feel you get.\r\n"
-    L"Increasing for more oversteer/understeer feeling in the wheel.\r\n"
-    L"Lower Max Force(stronger wheel) setting needs higher FFB Effects setting.\r\n"
+    L"AUTO TUNE\r\n"
+    L"Raises Max Force to eliminate clipping.\r\n"
+    L"Recovers (lowers Max Force) once driving smoothly resumes after a spike.\r\n"
+    L"Gradually lowers Max Force during long stints as tire grip diminishes.\r\n"
+    L"Will never go below your manually set Max Force value.\r\n"
+    L"Assign a SimHub button binding to toggle Auto Tune on/off from the car.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Settings are automatically saved in Documents folder.\r\n"
+    L"FFB EFFECTS\r\n"
+    L"Controls seat-of-the-pants feel: oversteer and understeer through the wheel.\r\n"
+    L"Increase for more feel.  Strong wheel (low Max Force) -> use higher value.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Set Bumps to your preference.\r\n"
-    L"Set Damping to your preference.\r\n" 
-    L"Try increasing Damping as you raise Max Force setting.\r\n"
+    L"BUMPS INTENSITY\r\n"
+    L"Controls road texture, kerbs, and surface detail in the wheel. Tune to taste.\r\n"
     L"--------------------------------------------------------------------------------\r\n"
-    L"Use SimHub overlays and button bindings to configure settings while in car.\r\n"
-    L"In iRacing's \\Documents\\Racing\\app.ini file, ensure the following settings:\r\n"
-    L"resetWhenFFBLost = 0\r\n"
-    L"forceResetBeforeInit = 0\r\n"
-    L"alwaysRestartFX = 0\r\n",
+    L"DAMPING\r\n"
+    L"Adds resistance and smooths wheel movement. Tune to taste.\r\n"
+    L"Increase Damping as you lower Max Force (strengthen the wheel).\r\n"
+    L"--------------------------------------------------------------------------------\r\n"
+    L"iRacing app.ini  (Documents\\iRacing\\app.ini)\r\n"
+    L"Prevent FFB conflicts by setting:\r\n"
+    L"  resetWhenFFBLost     = 0\r\n"
+    L"  forceResetBeforeInit = 0\r\n"
+    L"  alwaysRestartFX      = 0\r\n"
+    L"--------------------------------------------------------------------------------\r\n"
+    L"SIMHUB\r\n"
+    L"Use SimHub overlays to watch clipping percentage while driving.\r\n"
+    L"Use SimHub button bindings to adjust Max Force and Auto Tune in-car.\r\n"
+    L"Settings are automatically saved to your Documents folder.\r\n"
+    L"--------------------------------------------------------------------------------\r\n",
     WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
     440, 60, 500, 625,
     mainWnd, NULL, hInst, NULL
@@ -2996,6 +3015,7 @@ void reacquireDIDevice() {
     }
     LeaveCriticalSection(&effectCrit);
     directInputStatus = 1;
+    firstAfterReacquire = true;
     wheelAndEffectReady = true;
     debug(L"Reacquire succeeded → readWheelThread polling resumed");
 }
@@ -3169,6 +3189,7 @@ inline void setFFB(int incomingForce)
         const int LAPS_TO_LEARN_STABLE = 3;
         const int RACING_SURFACE = 3;
         const int RAISE_STEP_NM = 2;
+        const int LOWER_STEP_NM = 1;
         const int MAX_SAFE_MAXFORCE = 60;
 
         // 1. Off-track detection – every frame (needs to catch surface changes quickly)
@@ -3299,12 +3320,34 @@ inline void setFFB(int incomingForce)
                 learnedStableMaxForce == 0)
             {
                 learnedStableMaxForce = activeMaxForce;
-                text(L"Stablized Max Force: %d after %d clean laps",
+                text(L"Stabilized Max Force: %d after %d clean laps",
                     learnedStableMaxForce, consecutiveStableLaps);
-                // debug(L"Learned stable maxForce: %d after %d clean laps",
-                //     learnedStableMaxForce, consecutiveStableLaps);
             }
 
+            // Lower toward user's preferred value when stable (post-spike recovery
+            // and tire degradation adaptation: as grip drops, less force is generated,
+            // so we can lower Max Force to keep the wheel feeling strong)
+            if (!didRaiseThisFrame &&
+                activeMaxForce > userPreferredMaxForce &&
+                framesSinceAnyChange >= MIN_FRAMES_COOLDOWN * 2 &&
+                recentClipsInWindow == 0 &&
+                consecutiveStableLaps >= 1)
+            {
+                int candidate = max(activeMaxForce - LOWER_STEP_NM, userPreferredMaxForce);
+
+                settings.setMaxForce(candidate, (HWND)-1);
+                activeMaxForce = candidate;
+                lastKnownUserMax = activeMaxForce;
+
+                if (simHubConnectorStatus) updateSimHub();
+
+                text(L"Recovering Max Force to %d Nm", candidate);
+
+                framesSinceAnyChange = 0;
+                memset(clipWindow, 0, sizeof(clipWindow));
+                recentClipsInWindow = 0;
+                windowPos = 0;
+            }
 
         }
 
