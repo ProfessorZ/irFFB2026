@@ -95,6 +95,7 @@ Settings::Settings() {
     dampingFactor   = DEFAULT_DAMPING_FACTOR;
     FFBEffectsLevel = DEFAULT_FFB_EFFECTS;
     autoTune        = DEFAULT_AUTO_TUNE;
+    minForce        = DEFAULT_MIN_FORCE;
 }
 
 void Settings::setDevWnd(HWND wnd) { devWnd = wnd; }
@@ -126,6 +127,11 @@ void Settings::setFfbWnd(HWND wnd) {
 void Settings::setMaxWnd(sWins_t* wnd) {
     maxWnd = wnd;
     SendMessage(maxWnd->trackbar, TBM_SETRANGE, TRUE, MAKELPARAM(MIN_MAXFORCE, MAX_MAXFORCE));
+}
+
+void Settings::setMinWnd(sWins_t* wnd) {
+    minWnd = wnd;
+    SendMessage(minWnd->trackbar, TBM_SETRANGE, TRUE, MAKELPARAM(0, MAX_MINFORCE));
 }
 
 void Settings::setBumpsWnd(sWins_t* wnd) { bumpsWnd = wnd; }
@@ -213,6 +219,28 @@ bool Settings::setMaxForce(int max, HWND wnd) {
     irsdk_broadcastMsg(
         irsdk_BroadcastFFBCommand, irsdk_FFBCommand_MaxForce, (float)maxForce
     );
+    return true;
+}
+
+// Min Force (%): re-implements iRacing's Min Force, which iRacing locks out while
+// irFFB is driving the wheel. Precomputes the floor/slope used by setFFB to
+// linearly rescale the output into the minForce%..100% band, removing the
+// low-force deadzone on belt/gear wheels. 0 = off (floor 0, slope 1 -> no-op).
+bool Settings::setMinForce(int min, HWND wnd) {
+    if (min < 0 || min > MAX_MINFORCE)
+        return false;
+    minForce = min;
+
+    float frac = (float)min / 100.0f;
+    cachedMinForceFloorDI = frac * (float)DI_MAX;
+    cachedMinForceSlope   = 1.0f - frac;
+
+    if (wnd != minWnd->trackbar)
+        SendMessage(minWnd->trackbar, TBM_SETPOS, TRUE, minForce);
+    if (wnd != minWnd->value) {
+        swprintf_s(strbuf, L"%d", min);
+        SendMessage(minWnd->value, WM_SETTEXT, NULL, LPARAM(strbuf));
+    }
     return true;
 }
 
@@ -341,7 +369,7 @@ void Settings::readGenericSettings() {
         setDampingFactor(DEFAULT_DAMPING_FACTOR, (HWND)-1);
         setFFBEffectsLevel(DEFAULT_FFB_EFFECTS, (HWND)-1);
         setAutoTune(DEFAULT_AUTO_TUNE);
-       
+        setMinForce(DEFAULT_MIN_FORCE, (HWND)-1);
 
 
         return;
@@ -354,6 +382,7 @@ void Settings::readGenericSettings() {
     setBumpsFactor(getRegSetting(key, L"bumpsFactor", DEFAULT_BUMPS_FACTOR), (HWND)-1);
     setFFBEffectsLevel(getRegSetting(key, L"FFBEffectsLevel", DEFAULT_FFB_EFFECTS), (HWND)-1);
     setAutoTune(getRegSetting(key, L"autoTune", DEFAULT_AUTO_TUNE));
+    setMinForce(getRegSetting(key, L"minForce", DEFAULT_MIN_FORCE), (HWND)-1);
     
    
     RegCloseKey(key);
@@ -399,6 +428,7 @@ void Settings::writeGenericSettings() {
     setRegSetting(key, L"FFBEffectsLevel", FFBEffectsLevel);
     setRegSetting(key, L"useDDWheel", useDDWheel);
     setRegSetting(key, L"autoTune", autoTune);
+    setRegSetting(key, L"minForce", minForce);
 
 
 
@@ -433,7 +463,8 @@ void Settings::readSettingsForCar(char* car, char* track) {
     char trackName[MAX_TRACK_NAME];
     int type = DEFAULT_FFB_TYPE, max = DEFAULT_MAX_FORCE, useDDwheel = 0, autoTuneInt = DEFAULT_AUTO_TUNE ? 1 : 0;
     float  bumps = DEFAULT_BUMPS_FACTOR, damping = DEFAULT_DAMPING_FACTOR, FFBEffectsLevel = DEFAULT_FFB_EFFECTS;
-    
+    int minForceVal = DEFAULT_MIN_FORCE;
+
     int foundCarTrack = 0;
 
 
@@ -441,12 +472,16 @@ void Settings::readSettingsForCar(char* car, char* track) {
     memset(trackName, 0, sizeof(trackName)); //not sure if needed
 
     while (std::getline(iniFile, line)) {
+        // Reset minForce each line: pre-existing 9-field lines don't populate it,
+        // so without this a value from an earlier new-format line could leak into
+        // an old-format match.
+        minForceVal = DEFAULT_MIN_FORCE;
         if (
             sscanf_s(
                 line.c_str(), INI_SCAN_FORMAT,
 
                 carName, sizeof(carName), trackName, sizeof(trackName),
-                &type, &max, &damping, &bumps, &FFBEffectsLevel, &useDDwheel, &autoTuneInt
+                &type, &max, &damping, &bumps, &FFBEffectsLevel, &useDDwheel, &autoTuneInt, &minForceVal
             ) < 9
             ) {
 
@@ -512,9 +547,10 @@ void Settings::readSettingsForCar(char* car, char* track) {
     if (!setFFBEffectsLevel(FFBEffectsLevel, (HWND)-1)) setFFBEffectsLevel(DEFAULT_FFB_EFFECTS, (HWND)-1);
     setUseDDWheel(useDDwheel != 0);
     setAutoTune(autoTuneInt != 0);
+    if (!setMinForce(minForceVal, (HWND)-1))            setMinForce(DEFAULT_MIN_FORCE, (HWND)-1);
 
-  
-   
+
+
     foundCarTrack = 0;
 DONE:
     iniFile.close();
@@ -543,7 +579,7 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
     char carName[MAX_CAR_NAME], buf[256];
     char trackName[MAX_TRACK_NAME];
 
-    int type = 0, max = 30, useDDwheel = 0, autoTuneInt = 0;
+    int type = 0, max = 30, useDDwheel = 0, autoTuneInt = 0, minForceVal = DEFAULT_MIN_FORCE;
     float bumps = 5.0f, damping = 5.0f, FFBEffectsLevel = 50.0f;
 
 
@@ -567,10 +603,10 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
 
             sscanf_s(
                 line.c_str(), INI_SCAN_FORMAT,
-                carName, sizeof(carName), trackName, sizeof(trackName), 
-                &type, &max, &damping, &bumps, &FFBEffectsLevel, &useDDwheel, &autoTuneInt
-                 
-            ) < 9 
+                carName, sizeof(carName), trackName, sizeof(trackName),
+                &type, &max, &damping, &bumps, &FFBEffectsLevel, &useDDwheel, &autoTuneInt, &minForceVal
+
+            ) < 9
             
 
             ) {
@@ -600,7 +636,7 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
 
         sprintf_s(
             buf, INI_PRINT_FORMAT,
-            car, track, ffbType, maxForce, dampingFactor, bumpsFactor, getFFBEffectsLevel(), useDDWheel, (int)autoTune
+            car, track, ffbType, maxForce, dampingFactor, bumpsFactor, getFFBEffectsLevel(), useDDWheel, (int)autoTune, getMinForce()
             );
 
         writeWithNewline(tmpFile, buf);
@@ -614,7 +650,7 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
 
 
     if (!iniPresent) {
-        sprintf_s(buf, "Car:Track:FFB Type: Max Force: Damping:Bumps: FFB Effects: Use DD Wheel: Auto Tune \r\n\r\n");
+        sprintf_s(buf, "Car:Track:FFB Type: Max Force: Damping:Bumps: FFB Effects: Use DD Wheel: Auto Tune: Min Force \r\n\r\n");
         tmpFile.write(buf, strlen(buf));
 
 
@@ -639,6 +675,9 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
         sprintf_s(buf, "Auto Tune              | false = 0, true = 1\r\r\n");
         tmpFile.write(buf, strlen(buf));
 
+        sprintf_s(buf, "Min Force                 | min = 0, max = %d (percent; 0 = off)\r\n", MAX_MINFORCE);
+        tmpFile.write(buf, strlen(buf));
+
 
 
  
@@ -646,8 +685,8 @@ void Settings::writeSettingsForCar(char* car,  char* track) {
 
     sprintf_s(
         buf, INI_PRINT_FORMAT,
-        car, track, ffbType, maxForce, dampingFactor, bumpsFactor, getFFBEffectsLevel(), useDDWheel, (int)autoTune
-         
+        car, track, ffbType, maxForce, dampingFactor, bumpsFactor, getFFBEffectsLevel(), useDDWheel, (int)autoTune, getMinForce()
+
     );
 
 

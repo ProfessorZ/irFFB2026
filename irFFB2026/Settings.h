@@ -24,6 +24,8 @@ public:
 
     void setMaxWnd(sWins_t*);
     sWins_t* getMaxWnd() { return maxWnd; };
+    void setMinWnd(sWins_t*);
+    sWins_t* getMinWnd() { return minWnd; };
     void setBumpsWnd(sWins_t*);
     sWins_t* getBumpsWnd() { return bumpsWnd; };
     void setDampingWnd(sWins_t*);
@@ -71,6 +73,9 @@ public:
 
     bool setMaxForce(int, HWND);
     int getMaxForce() { return maxForce; };
+
+    bool setMinForce(int, HWND);
+    int getMinForce() { return minForce; };
     float getScaleFactor() { return scaleFactor; };
     float getNormalizedScaleFactor() { return (float)DI_MAX / ((float)maxForce * (IR_MAX / (float)DI_MAX)); }  // New: Normalizes with IR_MAX for raw signal
 
@@ -121,12 +126,19 @@ public:
     float cachedUnderSteerFactor = 0.0f;
     float cachedHalfMaxForce = 0.0f; // invalid initial value
 
+    // Precomputed Min Force terms read by the FFB hot path (setFFB). Output
+    // magnitude = floor + slope * |force|, which linearly rescales the signal so
+    // the smallest non-zero force is minForce% of full scale. Recomputed only
+    // when the Min Force setting changes. Defaults (0 / 1) are a no-op pass-through.
+    float cachedMinForceFloorDI = 0.0f;
+    float cachedMinForceSlope   = 1.0f;
+
 private:
     HWND devWnd, ffbWnd, overSteerLabelWnd;  
     sWins_t* FFBEffectsLevelWnd, * minWnd, * maxWnd, * bumpsWnd, * dampingWnd;  
     HWND useDDWheelWnd, carSpecificWnd, autoTuneWnd;
     HWND startMinimisedWnd, debugWnd;
-    int ffbType, ffdeviceIdx, maxForce; 
+    int ffbType, ffdeviceIdx, maxForce, minForce;
 
     bool vJoyResult = false;
 

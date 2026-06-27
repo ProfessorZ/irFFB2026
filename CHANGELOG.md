@@ -11,6 +11,15 @@ which feeds both the executable's version resource and the About dialog.
 ## [Unreleased]
 
 ### Added
+- **Min Force (%)**: a new slider that re-implements iRacing's Min Force, which
+  iRacing greys out while irFFB is the FFB source. It linearly rescales the
+  output so the smallest non-zero force lands in the `minForce%..100%` band,
+  clearing the low-force deadzone on belt/gear wheels without the notch a hard
+  clamp produces. `0 = off` (default), so Direct Drive wheels are untouched
+  unless the user opts in. The value persists to the registry (generic) and the
+  per-car/track INI (appended as a trailing field, so existing INI files keep
+  parsing). Floor/slope are precomputed in `Settings::setMinForce` and read by
+  the `setFFB` hot path. Replaces the previous hard-coded `MIN_FORCE` floor.
 - **FFB / clipping graph**: a scrolling time graph at the bottom of the main
   window plots FFB output level as a percentage of Max Force over the last
   10 minutes, with clipping highlighted in red and a red 100% ceiling line.

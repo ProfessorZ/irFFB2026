@@ -44,7 +44,8 @@ extern std::atomic<bool> isHighImpact;
 #define MINFORCE_MULTIPLIER 100
 #define MIN_MAXFORCE 5 //used to set range on Max Force Slider
 #define MAX_MAXFORCE 100 //used to set range on Max Force Slider
-#define MIN_FORCE 10 //hard coding min force on wheels if Direct Drive wheel is not selected.  10 seems to be a good number
+#define MIN_FORCE 10 //legacy hard-coded floor; superseded by the user-adjustable Min Force % setting
+#define MAX_MINFORCE 30 //upper bound (%) on the Min Force slider; 0 = off
 #define PARKED_FORCE_REDUCER 4
 #define BUMPSFORCE_MULTIPLIER 1.6f
 #define LOADFORCE_MULTIPLIER 0.08f
@@ -67,8 +68,11 @@ extern std::atomic<bool> isHighImpact;
 #define RUN_ON_STARTUP_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define INI_PATH L"\\irFFB2026.ini"
 
-#define INI_SCAN_FORMAT  "%[^:]:%[^:]:%d:%d:%f:%f:%f:%d:%d"
-#define INI_PRINT_FORMAT "%s:%s:%d:%d:%0.1f:%0.1f:%0.1f:%d:%d\r" 
+// minForce is the trailing field. It is appended last so pre-existing INI lines
+// (9 fields) still parse: sscanf fills the first 9 and leaves minForce at its
+// default. New lines write all 10. The car-line check stays ">= 9".
+#define INI_SCAN_FORMAT  "%[^:]:%[^:]:%d:%d:%f:%f:%f:%d:%d:%d"
+#define INI_PRINT_FORMAT "%s:%s:%d:%d:%0.1f:%0.1f:%0.1f:%d:%d:%d\r"
  
 
 #define MAX_CAR_NAME 32
@@ -98,7 +102,7 @@ extern std::atomic<bool> isHighImpact;
 #define LOGI_WHEEL_HID_CMD "\x00\xf8\x81\x84\x03\x00\x00\x00\x00"
 #define LOGI_WHEEL_HID_CMD_LEN 9
 
-#define SLEEP_SPIN_MAX_ITERATIONS   2000000     // ~50–200 ms depending on CPU speed
+#define SLEEP_SPIN_MAX_ITERATIONS   2000000     // ~50ï¿½200 ms depending on CPU speed
 #define SLEEP_SPIN_EMERGENCY_MS     1           // last-resort sleep if everything fails
 
 
@@ -122,6 +126,7 @@ constexpr float DEFAULT_BUMPS_FACTOR   = 5.0f;
 constexpr float DEFAULT_DAMPING_FACTOR = 5.0f;
 constexpr float DEFAULT_FFB_EFFECTS    = 50.0f;
 constexpr bool  DEFAULT_AUTO_TUNE      = true;
+constexpr int   DEFAULT_MIN_FORCE      = 0;   // Min Force % off by default
  
 
 typedef struct sWins {

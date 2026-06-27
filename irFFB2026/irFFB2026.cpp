@@ -2279,7 +2279,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
     mainWnd = CreateWindowW(
         szWindowClass, szTitle,
         WS_OVERLAPPEDWINDOW ^ WS_THICKFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 975, 1050,
+        CW_USEDEFAULT, CW_USEDEFAULT, 975, 1122,
         NULL, NULL, hInst, NULL
     );
 
@@ -2360,6 +2360,12 @@ HWND hTips = CreateWindowExW(
     L"Adds resistance and smooths wheel movement. Tune to taste.\r\n"
     L"Increase Damping as you lower Max Force (strengthen the wheel).\r\n"
     L"--------------------------------------------------------------------------------\r\n"
+    L"MIN FORCE (%)\r\n"
+    L"Replaces iRacing's Min Force, which iRacing locks while irFFB drives the wheel.\r\n"
+    L"Rescales output so the smallest force clears your wheel's deadzone.\r\n"
+    L"Belt/gear wheels: raise until tiny forces are felt (try 2-8%).  0 = off.\r\n"
+    L"Direct Drive wheels: leave at 0 (no deadzone to overcome).\r\n"
+    L"--------------------------------------------------------------------------------\r\n"
     L"iRacing app.ini  (Documents\\iRacing\\app.ini)\r\n"
     L"Prevent FFB conflicts by setting:\r\n"
     L"  resetWhenFFBLost     = 0\r\n"
@@ -2410,10 +2416,14 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
 
     settings.setDampingWnd(slider(mainWnd, L"Damping:", 44, 445, L"0", L"100", true));
 
+    // Min Force (%) — restores iRacing's Min Force, which iRacing greys out while
+    // irFFB is the FFB source. Integer percentage, so floatData = false.
+    settings.setMinWnd(slider(mainWnd, L"Min Force (%):", 44, 505, L"0", L"30", false));
+
 
 
     settings.setStartMinimisedWnd(
-        checkbox(mainWnd, L" Start minimized?", 44, 492)
+        checkbox(mainWnd, L" Start minimized?", 44, 575)
     );
 
 
@@ -2440,7 +2450,7 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
     textWnd = CreateWindowEx(
         WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_VISIBLE | WS_VSCROLL | WS_CHILD | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL,
-        32, 553, 376, 240,
+        32, 625, 376, 240,
         mainWnd, NULL, hInst, NULL
     );
     SendMessage(textWnd, EM_SETLIMITTEXT, WPARAM(256000), 0);
@@ -2461,7 +2471,7 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
             ffbGraphWnd = CreateWindowExW(
                 WS_EX_CLIENTEDGE, L"irFFBGraphClass", NULL,
                 WS_CHILD | WS_VISIBLE,
-                32, 800, 908, 180,
+                32, 872, 908, 180,
                 mainWnd, NULL, hInst, NULL
             );
         }
@@ -2567,7 +2577,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 if (simHubConnectorStatus == true) updateSimHub();
             }
 
-
+            else if (wnd == settings.getMinWnd()->value)
+                settings.setMinForce(wParam, wnd);
 
             else if (wnd == settings.getBumpsWnd()->value)
                 settings.setBumpsFactor(reinterpret_cast<float&>(wParam), wnd);
@@ -2599,6 +2610,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 settings.setMaxForce(SendMessage(wnd, TBM_GETPOS, 0, 0), wnd);
                 if (simHubConnectorStatus == true) updateSimHub();
             }
+
+            else if (wnd == settings.getMinWnd()->trackbar)
+                settings.setMinForce(SendMessage(wnd, TBM_GETPOS, 0, 0), wnd);
 
 
             else if (wnd == settings.getBumpsWnd()->trackbar)
@@ -3388,12 +3402,17 @@ inline void setFFB(int incomingForce)
 
     int processed = incomingForce;
 
-    // Basic processing always runs (min force, parked, status) — low latency
-    if (!settings.getUseDDWheel())
+    // Basic processing always runs (min force, parked, status) — low latency.
+    // Min Force re-implements iRacing's Min Force (which iRacing locks out while
+    // irFFB drives the wheel): linearly rescale the output into the
+    // minForce%..100% band so the smallest non-zero force clears the wheel's
+    // low-force deadzone. 0 = off; default 0 leaves DD wheels untouched unless
+    // the user opts in. Floor/slope are precomputed in Settings::setMinForce.
+    if (settings.getMinForce() > 0 && processed != 0)
     {
-        const int minForce = MIN_FORCE;
-        if (processed > 0 && processed < minForce) processed = minForce;
-        if (processed < 0 && processed > -minForce) processed = -minForce;
+        float mag    = processed < 0 ? -(float)processed : (float)processed;
+        float outMag = settings.cachedMinForceFloorDI + settings.cachedMinForceSlope * mag;
+        processed    = (int)(processed < 0 ? -outMag : outMag);
     }
 
     if (stopped)
