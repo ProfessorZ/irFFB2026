@@ -52,3 +52,11 @@ constants currently live inline in `irFFB2026.cpp`.
 Raw Win32: controls are created directly (`combo`, `slider`, `checkbox`) with the
 window procedure routing messages by control. The layout uses fixed pixel
 coordinates and is not yet DPI-aware (tracked as future work).
+
+The **FFB / clipping graph** at the bottom is an owner-painted child window
+(`ffbGraphProc`, class `irFFBGraphClass`) showing a scrolling history of FFB
+output level (% of Max Force) with clipping highlighted. The FFB hot path
+(`setFFB`) accumulates a peak level and a clip flag into two atomics
+(`ffbGraphPeak` / `ffbGraphClip`); a 1 Hz `WM_TIMER` on the main window reads-
+and-resets them into a ring buffer (UI thread only) and repaints. History length
+is the `FFB_GRAPH_SECONDS` constant (default 600 s).

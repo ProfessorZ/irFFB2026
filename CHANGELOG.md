@@ -10,6 +10,17 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+### Added
+- **FFB / clipping graph**: a scrolling time graph at the bottom of the main
+  window plots FFB output level as a percentage of Max Force over the last
+  10 minutes, with clipping highlighted in red and a red 100% ceiling line.
+  A live readout shows the current output % and the percentage of the window
+  spent clipping. Fed from the existing `setFFB` choke-point (peak level +
+  clip flag accumulated between samples), sampled once a second by a
+  `WM_TIMER` on the main window and drawn with a double-buffered owner-painted
+  child control. The history length is a single constant, `FFB_GRAPH_SECONDS`
+  in `irFFB2026.cpp` (set to 600 = 10 min; change to 300 for a 5-minute view).
+
 ## [1.2.3]
 
 ### Fixed
