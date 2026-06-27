@@ -44,7 +44,6 @@ extern std::atomic<bool> isHighImpact;
 #define MINFORCE_MULTIPLIER 100
 #define MIN_MAXFORCE 5 //used to set range on Max Force Slider
 #define MAX_MAXFORCE 100 //used to set range on Max Force Slider
-#define MIN_FORCE 10 //legacy hard-coded floor; superseded by the user-adjustable Min Force % setting
 #define MAX_MINFORCE 30 //upper bound (%) on the Min Force slider; 0 = off
 #define PARKED_FORCE_REDUCER 4
 #define BUMPSFORCE_MULTIPLIER 1.6f
