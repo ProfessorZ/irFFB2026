@@ -10,6 +10,8 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-27
+
 ### Added
 - **Min Force (%)**: a new slider that re-implements iRacing's Min Force, which
   iRacing greys out while irFFB is the FFB source. It linearly rescales the
