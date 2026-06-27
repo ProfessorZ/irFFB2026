@@ -2223,9 +2223,13 @@ LRESULT CALLBACK ffbGraphProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 int last = (ffbGraphHead - 1 + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
                 nowPct = ffbGraphPct[last];
             }
+            // Walk the last `count` seconds explicitly (newest backwards) so the
+            // ring-buffer wrap can't skew the percentage.
             int clipCols = 0;
-            for (int i = 0; i < count; i++)
-                if (ffbGraphClipped[i]) clipCols++;
+            for (int i = 0; i < count; i++) {
+                int idx = (ffbGraphHead - 1 - i + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
+                if (ffbGraphClipped[idx]) clipCols++;
+            }
             float clipWinPct = count > 0 ? (float)clipCols * 100.0f / (float)count : 0.0f;
 
             RECT tr = { mL, 2, W - mR, mT };
@@ -3333,6 +3337,27 @@ inline int scaleTorque(float t) {
 
 
 
+// Feed the scrolling FFB/clipping graph from the FFB hot path. Tracks the peak
+// requested output level (capped at the clip ceiling so the graph reads as a %
+// of Max Force) and whether any clip occurred since the UI thread last sampled.
+// compare_exchange handles the UI's read-and-reset racing this single producer.
+// Called on every setFFB path — including the early-return when telemetry
+// pointers are missing — so the graph reflects all applied FFB output.
+static inline void feedFfbGraph(int rawForce)
+{
+    int lvl = rawForce < 0 ? -rawForce : rawForce;
+    bool clipped = (lvl >= IR_MAX);
+    if (lvl > IR_MAX) lvl = IR_MAX;
+
+    int prevPeak = ffbGraphPeak.load(std::memory_order_relaxed);
+    while (lvl > prevPeak &&
+           !ffbGraphPeak.compare_exchange_weak(prevPeak, lvl, std::memory_order_relaxed))
+    {
+    }
+    if (clipped)
+        ffbGraphClip.store(1, std::memory_order_relaxed);
+}
+
 // ============================================================================
 // setFFB – Raise-only adaptive maxForce with lap-based stable learning
 // - Clip window updated EVERY FRAME for accurate counting
@@ -3374,7 +3399,9 @@ inline void setFFB(int incomingForce)
         if (processed > IR_MAX) processed = IR_MAX;
         if (processed < -IR_MAX) processed = -IR_MAX;
 
-
+        // Still feed the graph here: FFB is applied on this path, so the graph
+        // must record it too (clip detection mirrors the main path below).
+        feedFfbGraph(incomingForce);
 
         ffbMag.store(processed, std::memory_order_release);
         return;
@@ -3397,21 +3424,7 @@ inline void setFFB(int incomingForce)
    // debug(L"setFFB: Clipping Count: %d", clippingCounter);
 
     // ─── Feed the scrolling FFB/clipping graph ───
-    // Track the peak requested output level (capped at the clip ceiling so the
-    // graph reads as a % of Max Force) and whether any clip happened since the
-    // UI thread last sampled. compare_exchange handles the UI's read-and-reset
-    // racing this single producer.
-    {
-        int lvl = incomingForce < 0 ? -incomingForce : incomingForce;
-        if (lvl > IR_MAX) lvl = IR_MAX;
-        int prevPeak = ffbGraphPeak.load(std::memory_order_relaxed);
-        while (lvl > prevPeak &&
-               !ffbGraphPeak.compare_exchange_weak(prevPeak, lvl, std::memory_order_relaxed))
-        {
-        }
-        if (isClippingThisFrame)
-            ffbGraphClip.store(1, std::memory_order_relaxed);
-    }
+    feedFfbGraph(incomingForce);
 
 
     if (settings.getAutoTune()) {
