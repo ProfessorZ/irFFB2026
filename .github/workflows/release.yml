@@ -1,0 +1,40 @@
+name: Release
+
+# Triggered by a version tag (e.g. v1.2.3).
+# Builds Release|Win32, then creates a GitHub release with the exe attached.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    name: Build & Release | Win32
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build (Release|Win32)
+        run: msbuild irFFB2026.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=Win32
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter irFFB2026.exe | Select-Object -First 1
+          Copy-Item $exe.FullName irFFB2026.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: irFFB2026 ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: irFFB2026.exe
+          draft: false
+          prerelease: false
