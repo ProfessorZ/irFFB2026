@@ -231,9 +231,11 @@ bool Settings::setMinForce(int min, HWND wnd) {
         return false;
     minForce = min;
 
+    // Reference IR_MAX (the value setFFB clamps to), not DI_MAX, so the rescaled
+    // top of the range lands on the same rail the rest of the pipeline uses.
     float frac = (float)min / 100.0f;
-    cachedMinForceFloorDI = frac * (float)DI_MAX;
-    cachedMinForceSlope   = 1.0f - frac;
+    cachedMinForceFloor = frac * (float)IR_MAX;
+    cachedMinForceSlope = 1.0f - frac;
 
     if (wnd != minWnd->trackbar)
         SendMessage(minWnd->trackbar, TBM_SETPOS, TRUE, minForce);

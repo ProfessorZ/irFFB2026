@@ -3411,7 +3411,7 @@ inline void setFFB(int incomingForce)
     if (settings.getMinForce() > 0 && processed != 0)
     {
         float mag    = processed < 0 ? -(float)processed : (float)processed;
-        float outMag = settings.cachedMinForceFloorDI + settings.cachedMinForceSlope * mag;
+        float outMag = settings.cachedMinForceFloor + settings.cachedMinForceSlope * mag;
         processed    = (int)(processed < 0 ? -outMag : outMag);
     }
 
@@ -3428,13 +3428,15 @@ inline void setFFB(int incomingForce)
     {
        // debug(L"setFFB: trackSurface:%d lapCompleted: %d", *trackSurface, *lapCompleted);
        // debug(L"setFFB: basic processing");
+        // Still feed the graph here: FFB is applied on this path, so the graph
+        // must record it too (clip detection mirrors the main path below).
+        // Feed the post-Min-Force/post-parked value actually sent to the wheel,
+        // before clamping, so the graph reflects real output and detects clip.
+        feedFfbGraph(processed);
+
         // Basic passthrough only
         if (processed > IR_MAX) processed = IR_MAX;
         if (processed < -IR_MAX) processed = -IR_MAX;
-
-        // Still feed the graph here: FFB is applied on this path, so the graph
-        // must record it too (clip detection mirrors the main path below).
-        feedFfbGraph(incomingForce);
 
         ffbMag.store(processed, std::memory_order_release);
         return;
@@ -3442,7 +3444,10 @@ inline void setFFB(int incomingForce)
     //debug(L"setFFB: clipping check");
 
     // ─── Clip detection & window update – EVERY FRAME (cheap, keeps count accurate) ───
-    bool isClippingThisFrame = (incomingForce <= -IR_MAX || incomingForce >= IR_MAX);
+    // Use the post-Min-Force/post-parked value actually written to ffbMag, so
+    // clip stats and the graph reflect real output. With Min Force off and not
+    // parked this equals incomingForce, so existing behaviour is unchanged.
+    bool isClippingThisFrame = (processed <= -IR_MAX || processed >= IR_MAX);
     samples++;
     if (isClippingThisFrame)
     {
@@ -3457,7 +3462,7 @@ inline void setFFB(int incomingForce)
    // debug(L"setFFB: Clipping Count: %d", clippingCounter);
 
     // ─── Feed the scrolling FFB/clipping graph ───
-    feedFfbGraph(incomingForce);
+    feedFfbGraph(processed);
 
 
     if (settings.getAutoTune()) {

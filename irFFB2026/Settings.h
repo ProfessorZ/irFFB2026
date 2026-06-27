@@ -130,8 +130,8 @@ public:
     // magnitude = floor + slope * |force|, which linearly rescales the signal so
     // the smallest non-zero force is minForce% of full scale. Recomputed only
     // when the Min Force setting changes. Defaults (0 / 1) are a no-op pass-through.
-    float cachedMinForceFloorDI = 0.0f;
-    float cachedMinForceSlope   = 1.0f;
+    float cachedMinForceFloor = 0.0f;
+    float cachedMinForceSlope = 1.0f;
 
 private:
     HWND devWnd, ffbWnd, overSteerLabelWnd;  
