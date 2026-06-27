@@ -10,6 +10,38 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+## [1.2.3]
+
+### Fixed
+- Clipping percentage always reported 0.00% when Auto Tune was disabled.
+  `samples++` was inside the Auto Tune branch so the denominator never
+  advanced; moved it to the unconditional clip-detection block.
+- Binary `irFFB.rc` was resolved to 0 bytes by a bad binary-file merge,
+  stripping all Windows resources (icons, dialogs, menus, version block)
+  and producing a non-functional executable. Restored from the correct
+  pre-merge commit.
+- `firstAfterReacquire` promoted to `std::atomic<bool>` and checked with
+  `exchange(false)` to eliminate a data race between the readWheel thread,
+  `reacquireDIDevice()`, and the session-start path.
+
+### Added
+- **Bidirectional Auto Tune**: after raising Max Force to stop clipping,
+  Auto Tune now gradually lowers it back toward your preferred value once
+  clipping stays at zero across a cooldown period, recovering wheel feel
+  lost during spike events or tyre wear.
+- Improved Quick Tips help panel: added sections for Direct Drive Wheel,
+  Smoothing, Bumps Intensity, and Damping; rewrote Max Force guidance with
+  a tuning-goal framing; fixed the `app.ini` path; added a numbered
+  First Time Setup list.
+
+### Changed
+- Session start now calls `resetForces()` and sets `firstAfterReacquire`
+  so the wheel gets a clean-state reset when joining a new session, fixing
+  the "FFB feels weak on entry" issue.
+- Settings load now validates values through the existing setters (with
+  range-checking) instead of applying them blindly, and falls back to
+  defaults for missing or out-of-range values.
+
 ## [1.2.2]
 
 ### Fixed
