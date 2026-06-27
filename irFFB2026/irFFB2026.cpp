@@ -2111,9 +2111,17 @@ LRESULT CALLBACK ffbGraphProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int W = rc.right  > 0 ? rc.right  : 1;
         int H = rc.bottom > 0 ? rc.bottom : 1;
 
-        // Double buffer to avoid flicker on the 1 Hz repaint.
+        // Double buffer to avoid flicker on the 1 Hz repaint. If either GDI
+        // object can't be created (e.g. low resources), skip this frame rather
+        // than draw on an invalid DC.
         HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, W, H);
+        HBITMAP bmp = mem ? CreateCompatibleBitmap(hdc, W, H) : NULL;
+        if (!mem || !bmp) {
+            if (bmp) DeleteObject(bmp);
+            if (mem) DeleteDC(mem);
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
         HBITMAP oldBmp = (HBITMAP)SelectObject(mem, bmp);
 
         // Palette
@@ -2446,17 +2454,23 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
         gcls.hCursor       = LoadCursor(nullptr, IDC_ARROW);
         gcls.hbrBackground = NULL;                  // fully painted in WM_PAINT
         gcls.lpszClassName = L"irFFBGraphClass";
-        RegisterClassW(&gcls);
 
-        ffbGraphWnd = CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"irFFBGraphClass", NULL,
-            WS_CHILD | WS_VISIBLE,
-            32, 800, 908, 180,
-            mainWnd, NULL, hInst, NULL
-        );
+        // RegisterClassW fails harmlessly if the class already exists; only a
+        // genuine registration failure should stop us creating the window.
+        if (RegisterClassW(&gcls) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+            ffbGraphWnd = CreateWindowExW(
+                WS_EX_CLIENTEDGE, L"irFFBGraphClass", NULL,
+                WS_CHILD | WS_VISIBLE,
+                32, 800, 908, 180,
+                mainWnd, NULL, hInst, NULL
+            );
+        }
 
-        // Sample the FFB level / clipping once a second and scroll the graph.
-        SetTimer(mainWnd, FFB_GRAPH_TIMER_ID, FFB_GRAPH_TIMER_MS, NULL);
+        // Only run the 1 Hz sampler/scroller if the graph window actually exists.
+        if (ffbGraphWnd)
+            SetTimer(mainWnd, FFB_GRAPH_TIMER_ID, FFB_GRAPH_TIMER_MS, NULL);
+        else
+            text(L"FFB graph unavailable (window creation failed)");
     }
 
     ShowWindow(mainWnd, SW_HIDE);
