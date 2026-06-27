@@ -11,6 +11,12 @@ which feeds both the executable's version resource and the About dialog.
 ## [Unreleased]
 
 ### Added
+- **CI/CD — automatic tagging & releases**: merging a `version.h` bump to
+  `master` now builds `Release|Win32` once (the master compile gate), derives
+  the tag `v<IRFFB_VERSION_STR>`, and — when that tag is new — creates & pushes
+  it and publishes a GitHub release with the built `irFFB2026.exe` attached.
+  Master pushes that don't change the version are idempotent (no new tag or
+  release). Pre-merge compile gating moved to `build.yml` (pull requests).
 - **FFB / clipping graph**: a scrolling time graph at the bottom of the main
   window plots FFB output level as a percentage of Max Force over the last
   10 minutes, with clipping highlighted in red and a red 100% ceiling line.

@@ -1,32 +1,74 @@
 name: Release
 
-# Triggered by a version tag (e.g. v1.2.3).
-# Builds Release|Win32, then creates a GitHub release with the exe attached.
+# Fully automated release pipeline.
+#
+# Flow: bump irFFB2026/version.h -> merge to master. This workflow then:
+#   1. builds Release|Win32 once (the master compile gate),
+#   2. derives the tag "v<IRFFB_VERSION_STR>" from version.h,
+#   3. if that tag does not already exist, creates & pushes it and publishes a
+#      GitHub release with the built irFFB2026.exe attached.
+#
+# If version.h still carries a version that is already tagged, the build job
+# still runs (gating master) but no new tag or release is produced - so ordinary
+# master pushes are idempotent. A manual run can force a (re)release of whatever
+# version.h currently holds.
+#
+# Note: the tag is created with GITHUB_TOKEN inside this same run on purpose. A
+# tag pushed by GITHUB_TOKEN does not trigger further workflow runs, so tagging
+# and releasing must live together here rather than in a separate tag-listening
+# workflow.
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [ master ]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Release tag (e.g. v1.2.3)'
-        required: true
-        type: string
+      force:
+        description: 'Release version.h even if its tag already exists'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
-  release:
-    name: Build & Release | Win32
+  build:
+    name: Build & gate | Win32
     runs-on: windows-latest
-    permissions:
-      contents: write
-
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      should_release: ${{ steps.ver.outputs.should_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve version & decide whether to release
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path irFFB2026/version.h -Pattern 'IRFFB_VERSION_STR\s+"([^"]+)"'
+          if (-not $m) { throw "Could not find IRFFB_VERSION_STR in irFFB2026/version.h" }
+          $version = $m.Matches[0].Groups[1].Value
+          $tag = "v$version"
+
+          git fetch --tags --quiet
+          $exists = [bool](git tag -l $tag)
+          $force = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.force }}' -eq 'true')
+          $should = (-not $exists) -or $force
+
+          "version=$version"                              | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag"                                      | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "should_release=$($should.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "version=$version tag=$tag tag_exists=$exists force=$force -> should_release=$should"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
+      # Release|Win32 is the canonical configuration: it is the only one with the
+      # link dependencies (dinput8/dxguid/shlwapi/comctl32/winhttp/...) wired up.
       - name: Build (Release|Win32)
         run: msbuild irFFB2026.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=Win32
 
@@ -37,11 +79,49 @@ jobs:
           if ($exes.Count -ne 1) { throw "Expected exactly 1 irFFB2026.exe, found $($exes.Count)" }
           Copy-Item $exes[0].FullName irFFB2026.exe -Force
 
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: irFFB2026-Release-Win32
+          path: irFFB2026.exe
+          if-no-files-found: error
+
+  release:
+    name: Tag & publish
+    needs: build
+    if: needs.build.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download executable
+        uses: actions/download-artifact@v4
+        with:
+          name: irFFB2026-Release-Win32
+
+      - name: Create & push tag
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists locally; reusing it (forced release)."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "irFFB2026 ${TAG}" "${GITHUB_SHA}"
+            git push origin "${TAG}"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: irFFB2026 ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: irFFB2026 ${{ needs.build.outputs.tag }}
           body_path: CHANGELOG.md
           files: irFFB2026.exe
           draft: false

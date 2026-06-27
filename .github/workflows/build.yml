@@ -3,9 +3,11 @@ name: Build
 # Compile-gate the project on a Windows runner. This validates that the code,
 # the version resource (version.h -> irFFB.rc), and the linker inputs all build
 # cleanly. It does NOT exercise FFB behavior - that still requires a wheel + iRacing.
+#
+# Master pushes are handled by release.yml (which builds once, then auto-tags and
+# releases when version.h carries a new version), so this workflow only gates the
+# pre-merge paths to avoid double-building every merge.
 on:
-  push:
-    branches: [ master ]
   pull_request:
   workflow_dispatch:
 
