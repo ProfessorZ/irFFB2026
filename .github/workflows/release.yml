@@ -6,6 +6,12 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.2.3)'
+        required: true
+        type: string
 
 jobs:
   release:
@@ -33,7 +39,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: irFFB2026 ${{ github.ref_name }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: irFFB2026 ${{ github.event.inputs.tag || github.ref_name }}
           body_path: CHANGELOG.md
           files: irFFB2026.exe
           draft: false
