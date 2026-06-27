@@ -3146,6 +3146,7 @@ inline void setFFB(int incomingForce)
 
     // ─── Clip detection & window update – EVERY FRAME (cheap, keeps count accurate) ───
     bool isClippingThisFrame = (incomingForce <= -IR_MAX || incomingForce >= IR_MAX);
+    samples++;
     if (isClippingThisFrame)
     {
         clippedSamples++;
@@ -3240,8 +3241,6 @@ inline void setFFB(int incomingForce)
         clipWindow[windowPos] = addClipToWindow && isClippingThisFrame ? 1 : 0;
         recentClipsInWindow += clipWindow[windowPos];
         windowPos = (windowPos + 1) % WINDOW_SIZE;
-
-        samples++;
 
         //debug(L"setFFB: framesSinceChange: %d recentClipsWin: %d", framesSinceAnyChange, recentClipsInWindow);
         // 4. Heavy raise / lap / learn logic – only every 10th frame
