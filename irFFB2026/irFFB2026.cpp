@@ -264,8 +264,30 @@ int iracingConnectedStatus = 0;
 int vjoyStatus = 0;
 int irFFBStatus = 0;
 int directInputStatus = 0;
-int clippingStatus = 0; 
+int clippingStatus = 0;
 int clippingCounter = 0;  //using this to keep from reporting to fast.  Will send to simhub every 1 second by setting limit to 60 passes.
+
+// ─── FFB / clipping history graph ────────────────────────────────────────────
+// A scrolling graph of FFB output level (as % of Max Force) with clipping
+// highlighted. The FFB hot path (setFFB) accumulates the peak output level and a
+// clip flag between UI samples; a 1 Hz WM_TIMER on the main window reads-and-
+// resets them (atomic exchange) into a ring buffer and repaints the graph.
+// setFFB only ever runs on one thread at a time (telemetry thread in irFFB
+// modes, directFFBThread in Game modes), so this is single-producer/single-
+// consumer and needs no locking — the ring buffer itself is touched only by the
+// UI thread (WM_TIMER + WM_PAINT).
+#define FFB_GRAPH_SECONDS  600        // history length in seconds (600 = 10 minutes)
+#define FFB_GRAPH_TIMER_ID 1001       // WM_TIMER id for the graph sampler
+#define FFB_GRAPH_TIMER_MS 1000       // sample/scroll interval: one bucket per second
+
+std::atomic<int> ffbGraphPeak{ 0 };   // peak |force| since the last UI sample (IR units)
+std::atomic<int> ffbGraphClip{ 0 };   // 1 if any clip occurred since the last UI sample
+
+HWND ffbGraphWnd = NULL;                              // owner-painted graph child window
+static float ffbGraphPct[FFB_GRAPH_SECONDS]    = { 0 };     // peak output %, 0..100, per second
+static bool  ffbGraphClipped[FFB_GRAPH_SECONDS] = { false }; // any clip that second
+static int   ffbGraphHead  = 0;                      // ring write position (one past newest)
+static int   ffbGraphCount = 0;                      // valid samples so far (<= FFB_GRAPH_SECONDS)
 
 
 
@@ -2066,6 +2088,188 @@ HWND checkbox(HWND parent, wchar_t *name, int x, int y) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ffbGraphProc – owner-painted, double-buffered scrolling graph of FFB output
+// level (% of Max Force) with clipping highlighted in red. Reads the ring buffer
+// filled by the WM_TIMER handler; both run on the UI thread so no locking is
+// needed. Newest data is at the right edge and scrolls left over time.
+// ─────────────────────────────────────────────────────────────────────────────
+LRESULT CALLBACK ffbGraphProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+
+    switch (msg) {
+
+    case WM_ERASEBKGND:
+        return 1; // fully painted in WM_PAINT; skip the default erase to avoid flicker
+
+    case WM_PAINT: {
+
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        int W = rc.right  > 0 ? rc.right  : 1;
+        int H = rc.bottom > 0 ? rc.bottom : 1;
+
+        // Double buffer to avoid flicker on the 1 Hz repaint. If either GDI
+        // object can't be created (e.g. low resources), skip this frame rather
+        // than draw on an invalid DC.
+        HDC mem = CreateCompatibleDC(hdc);
+        HBITMAP bmp = mem ? CreateCompatibleBitmap(hdc, W, H) : NULL;
+        if (!mem || !bmp) {
+            if (bmp) DeleteObject(bmp);
+            if (mem) DeleteDC(mem);
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+        HBITMAP oldBmp = (HBITMAP)SelectObject(mem, bmp);
+
+        // Palette
+        const COLORREF cBg    = RGB(18, 20, 24);
+        const COLORREF cGrid  = RGB(44, 48, 56);
+        const COLORREF cAxis  = RGB(90, 96, 108);
+        const COLORREF cTrace = RGB(64, 200, 96);
+        const COLORREF cClip  = RGB(232, 64, 64);
+        const COLORREF cText  = RGB(206, 212, 222);
+        const COLORREF cMuted = RGB(140, 148, 160);
+
+        HBRUSH bgBrush = CreateSolidBrush(cBg);
+        FillRect(mem, &rc, bgBrush);
+        DeleteObject(bgBrush);
+
+        SetBkMode(mem, TRANSPARENT);
+        HGDIOBJ oldFont = SelectObject(mem, GetStockObject(DEFAULT_GUI_FONT));
+
+        // Plot area (leave room for axis labels and a title strip)
+        const int mL = 34, mT = 20, mB = 16, mR = 10;
+        int plotX = mL, plotY = mT;
+        int plotW = W - mL - mR;
+        int plotH = H - mT - mB;
+
+        if (plotW > 8 && plotH > 8) {
+
+            int baseY = plotY + plotH; // 0% line
+
+            // Gridlines: horizontal at 0/25/50/75/100 % (label 0/50/100), vertical per minute.
+            HPEN gridPen = CreatePen(PS_SOLID, 1, cGrid);
+            HGDIOBJ prevPen = SelectObject(mem, gridPen);
+            SetTextColor(mem, cMuted);
+            for (int p = 0; p <= 100; p += 25) {
+                int y = plotY + plotH - (plotH * p / 100);
+                MoveToEx(mem, plotX, y, NULL);
+                LineTo(mem, plotX + plotW, y);
+                if (p % 50 == 0) {
+                    wchar_t lbl[8];
+                    StringCbPrintfW(lbl, sizeof(lbl), L"%d", p);
+                    RECT tr = { 0, y - 8, plotX - 3, y + 8 };
+                    DrawTextW(mem, lbl, -1, &tr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
+            for (int s = 60; s < FFB_GRAPH_SECONDS; s += 60) {
+                int x = plotX + plotW - (int)((long long)plotW * s / FFB_GRAPH_SECONDS);
+                if (x <= plotX) continue;
+                MoveToEx(mem, x, plotY, NULL);
+                LineTo(mem, x, baseY);
+            }
+            SelectObject(mem, prevPen);
+            DeleteObject(gridPen);
+
+            // Data trace: one vertical bar per pixel column on a fixed time axis.
+            // The rightmost pixel is "now"; each pixel is ~FFB_GRAPH_SECONDS/plotW
+            // seconds of history. The left edge stays empty until the buffer fills.
+            int count = ffbGraphCount;
+            if (count > 0) {
+                int newest = (ffbGraphHead - 1 + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
+                HPEN tracePen = CreatePen(PS_SOLID, 1, cTrace);
+                HPEN clipPen  = CreatePen(PS_SOLID, 1, cClip);
+                bool clipActive = false;
+                prevPen = SelectObject(mem, tracePen);
+                for (int x = 0; x < plotW; x++) {
+                    int secFromRight = (int)((long long)(plotW - 1 - x) * FFB_GRAPH_SECONDS / plotW);
+                    if (secFromRight >= count) continue; // history not deep enough yet
+                    int idx = (newest - secFromRight + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
+                    float pct = ffbGraphPct[idx];
+                    if (pct < 0.0f)   pct = 0.0f;
+                    if (pct > 100.0f) pct = 100.0f;
+                    bool clp = ffbGraphClipped[idx];
+                    if (clp != clipActive) {
+                        SelectObject(mem, clp ? clipPen : tracePen);
+                        clipActive = clp;
+                    }
+                    int barH = (int)((plotH * pct) / 100.0f + 0.5f);
+                    int xx = plotX + x;
+                    MoveToEx(mem, xx, baseY, NULL);
+                    LineTo(mem, xx, baseY - barH);
+                }
+                SelectObject(mem, prevPen);
+                DeleteObject(tracePen);
+                DeleteObject(clipPen);
+            }
+
+            // Clip ceiling (100%) in red, then the axis box.
+            HPEN ceilPen = CreatePen(PS_SOLID, 1, cClip);
+            prevPen = SelectObject(mem, ceilPen);
+            MoveToEx(mem, plotX, plotY, NULL);
+            LineTo(mem, plotX + plotW, plotY);
+            SelectObject(mem, prevPen);
+            DeleteObject(ceilPen);
+
+            HPEN axisPen = CreatePen(PS_SOLID, 1, cAxis);
+            prevPen = SelectObject(mem, axisPen);
+            MoveToEx(mem, plotX, plotY, NULL);
+            LineTo(mem, plotX, baseY);
+            LineTo(mem, plotX + plotW, baseY);
+            SelectObject(mem, prevPen);
+            DeleteObject(axisPen);
+        }
+
+        // Title + live readouts in the top strip.
+        {
+            int count = ffbGraphCount;
+            float nowPct = 0.0f;
+            if (count > 0) {
+                int last = (ffbGraphHead - 1 + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
+                nowPct = ffbGraphPct[last];
+            }
+            // Walk the last `count` seconds explicitly (newest backwards) so the
+            // ring-buffer wrap can't skew the percentage.
+            int clipCols = 0;
+            for (int i = 0; i < count; i++) {
+                int idx = (ffbGraphHead - 1 - i + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
+                if (ffbGraphClipped[idx]) clipCols++;
+            }
+            float clipWinPct = count > 0 ? (float)clipCols * 100.0f / (float)count : 0.0f;
+
+            RECT tr = { mL, 2, W - mR, mT };
+            wchar_t title[96];
+            StringCbPrintfW(title, sizeof(title),
+                L"FFB Output  (last %d min)", FFB_GRAPH_SECONDS / 60);
+            SetTextColor(mem, cText);
+            DrawTextW(mem, title, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            wchar_t readout[96];
+            StringCbPrintfW(readout, sizeof(readout),
+                L"now %.0f%%    clipping %.1f%%", nowPct, clipWinPct);
+            SetTextColor(mem, clipWinPct >= 1.0f ? cClip : cMuted);
+            DrawTextW(mem, readout, -1, &tr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        SelectObject(mem, oldFont);
+
+        BitBlt(hdc, 0, 0, W, H, mem, 0, 0, SRCCOPY);
+
+        SelectObject(mem, oldBmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    }
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
 
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
@@ -2075,7 +2279,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
     mainWnd = CreateWindowW(
         szWindowClass, szTitle,
         WS_OVERLAPPEDWINDOW ^ WS_THICKFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 975, 900,
+        CW_USEDEFAULT, CW_USEDEFAULT, 975, 1050,
         NULL, NULL, hInst, NULL
     );
 
@@ -2240,6 +2444,34 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
         mainWnd, NULL, hInst, NULL
     );
     SendMessage(textWnd, EM_SETLIMITTEXT, WPARAM(256000), 0);
+
+    // ─── Scrolling FFB / clipping graph ───
+    {
+        WNDCLASSW gcls = { 0 };
+        gcls.style         = CS_HREDRAW | CS_VREDRAW;
+        gcls.lpfnWndProc   = ffbGraphProc;
+        gcls.hInstance     = hInst;
+        gcls.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+        gcls.hbrBackground = NULL;                  // fully painted in WM_PAINT
+        gcls.lpszClassName = L"irFFBGraphClass";
+
+        // RegisterClassW fails harmlessly if the class already exists; only a
+        // genuine registration failure should stop us creating the window.
+        if (RegisterClassW(&gcls) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+            ffbGraphWnd = CreateWindowExW(
+                WS_EX_CLIENTEDGE, L"irFFBGraphClass", NULL,
+                WS_CHILD | WS_VISIBLE,
+                32, 800, 908, 180,
+                mainWnd, NULL, hInst, NULL
+            );
+        }
+
+        // Only run the 1 Hz sampler/scroller if the graph window actually exists.
+        if (ffbGraphWnd)
+            SetTimer(mainWnd, FFB_GRAPH_TIMER_ID, FFB_GRAPH_TIMER_MS, NULL);
+        else
+            text(L"FFB graph unavailable (window creation failed)");
+    }
 
     ShowWindow(mainWnd, SW_HIDE);
     UpdateWindow(mainWnd);
@@ -2408,6 +2640,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
         break;
 
+        case WM_TIMER: {
+            if (wParam == FFB_GRAPH_TIMER_ID) {
+                // Read-and-reset the peak level / clip flag accumulated by setFFB
+                // since the last tick, append a one-second bucket, and scroll.
+                int peak = ffbGraphPeak.exchange(0, std::memory_order_relaxed);
+                int clip = ffbGraphClip.exchange(0, std::memory_order_relaxed);
+
+                float pct = (float)peak * 100.0f / (float)IR_MAX;
+                if (pct > 100.0f) pct = 100.0f;
+
+                ffbGraphPct[ffbGraphHead] = pct;
+                ffbGraphClipped[ffbGraphHead] = (clip != 0);
+                ffbGraphHead = (ffbGraphHead + 1) % FFB_GRAPH_SECONDS;
+                if (ffbGraphCount < FFB_GRAPH_SECONDS) ffbGraphCount++;
+
+                if (ffbGraphWnd) InvalidateRect(ffbGraphWnd, NULL, FALSE);
+                return 0;
+            }
+            return DefWindowProc(hWnd, message, wParam, lParam);
+        }
+        break;
+
         case WM_POWERBROADCAST: {
             int wmId = LOWORD(wParam);
             switch (wmId) {
@@ -2472,6 +2726,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_DESTROY: {
             debug(L"Exiting");
+            KillTimer(hWnd, FFB_GRAPH_TIMER_ID);
             Shell_NotifyIcon(NIM_DELETE, &niData);
             releaseAll();
 
@@ -3096,6 +3351,27 @@ inline int scaleTorque(float t) {
 
 
 
+// Feed the scrolling FFB/clipping graph from the FFB hot path. Tracks the peak
+// requested output level (capped at the clip ceiling so the graph reads as a %
+// of Max Force) and whether any clip occurred since the UI thread last sampled.
+// compare_exchange handles the UI's read-and-reset racing this single producer.
+// Called on every setFFB path — including the early-return when telemetry
+// pointers are missing — so the graph reflects all applied FFB output.
+static inline void feedFfbGraph(int rawForce)
+{
+    int lvl = rawForce < 0 ? -rawForce : rawForce;
+    bool clipped = (lvl >= IR_MAX);
+    if (lvl > IR_MAX) lvl = IR_MAX;
+
+    int prevPeak = ffbGraphPeak.load(std::memory_order_relaxed);
+    while (lvl > prevPeak &&
+           !ffbGraphPeak.compare_exchange_weak(prevPeak, lvl, std::memory_order_relaxed))
+    {
+    }
+    if (clipped)
+        ffbGraphClip.store(1, std::memory_order_relaxed);
+}
+
 // ============================================================================
 // setFFB – Raise-only adaptive maxForce with lap-based stable learning
 // - Clip window updated EVERY FRAME for accurate counting
@@ -3137,7 +3413,9 @@ inline void setFFB(int incomingForce)
         if (processed > IR_MAX) processed = IR_MAX;
         if (processed < -IR_MAX) processed = -IR_MAX;
 
-
+        // Still feed the graph here: FFB is applied on this path, so the graph
+        // must record it too (clip detection mirrors the main path below).
+        feedFfbGraph(incomingForce);
 
         ffbMag.store(processed, std::memory_order_release);
         return;
@@ -3158,6 +3436,9 @@ inline void setFFB(int incomingForce)
         clippingStatus = 0;
     }
    // debug(L"setFFB: Clipping Count: %d", clippingCounter);
+
+    // ─── Feed the scrolling FFB/clipping graph ───
+    feedFfbGraph(incomingForce);
 
 
     if (settings.getAutoTune()) {
