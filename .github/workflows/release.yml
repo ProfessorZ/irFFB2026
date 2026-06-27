@@ -102,6 +102,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: irFFB2026-Release-Win32
+          path: dist
 
       - name: Create & push tag
         env:
@@ -109,7 +110,18 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists locally; reusing it (forced release)."
+            # Only reachable on a forced run (the unforced path is gated out when
+            # the tag already exists). Refuse to publish the freshly built exe
+            # under a tag that resolves to a different commit - that would break
+            # traceability between the release asset and its source.
+            existing="$(git rev-list -n 1 "${TAG}")"
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "::error::Tag ${TAG} already exists at ${existing}, which differs from the commit being released (${GITHUB_SHA})."
+              echo "Refusing to attach an exe built from ${GITHUB_SHA} to a tag pointing elsewhere."
+              echo "Bump version.h, or deliberately delete/move the tag, then re-run."
+              exit 1
+            fi
+            echo "Tag ${TAG} already exists at the current commit; reusing it (forced release)."
           else
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -123,6 +135,6 @@ jobs:
           tag_name: ${{ needs.build.outputs.tag }}
           name: irFFB2026 ${{ needs.build.outputs.tag }}
           body_path: CHANGELOG.md
-          files: irFFB2026.exe
+          files: dist/irFFB2026.exe
           draft: false
           prerelease: false
