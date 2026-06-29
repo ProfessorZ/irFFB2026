@@ -710,6 +710,32 @@ MOVE:
 
 
 
+bool Settings::wipeCarConfigs() {
+
+    PWSTR path = getIniPath();
+    if (path == nullptr) {
+        text(L"Failed to locate documents folder, can't wipe configs");
+        return false;
+    }
+
+    BOOL ok = DeleteFileW(path);
+    DWORD err = GetLastError();
+    delete[] path;
+
+    if (ok || err == ERROR_FILE_NOT_FOUND) {
+        text(L"Car/track configurations wiped");
+        return true;
+    }
+
+    text(L"Failed to wipe configurations, error %d", err);
+    return false;
+}
+
+PWSTR Settings::getCarConfigPath() {
+    // Public wrapper around the private getIniPath(); caller frees with delete[].
+    return getIniPath();
+}
+
 wchar_t* Settings::ffbTypeString(int type) {
     switch (type) {
     case FFBTYPE_IRFFB_360:             return L"irFFB FFB - 360 Smoothing";

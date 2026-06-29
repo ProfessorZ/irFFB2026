@@ -159,6 +159,7 @@ ATOM MyRegisterClass(HINSTANCE);
 BOOL InitInstance(HINSTANCE, int);
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK Options(HWND, UINT, WPARAM, LPARAM);
 
 HWND combo(HWND, wchar_t*, int, int);
 sWins_t* slider(HWND, wchar_t*, int, int, wchar_t*, wchar_t*, bool);

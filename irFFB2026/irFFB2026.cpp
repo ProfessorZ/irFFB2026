@@ -2537,6 +2537,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 case IDM_EXIT:
                     DestroyWindow(hWnd);
                     break;
+                case IDM_OPTIONS:
+                    DialogBox(hInst, MAKEINTRESOURCE(IDD_OPTIONS), hWnd, Options);
+                    break;
 
                 default:
                     if (HIWORD(wParam) == CBN_SELCHANGE) {
@@ -2821,6 +2824,81 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
                 return (INT_PTR)TRUE;
             }
         break;
+    }
+
+    return (INT_PTR)FALSE;
+
+}
+
+INT_PTR CALLBACK Options(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+
+    UNREFERENCED_PARAMETER(lParam);
+
+    switch (message) {
+
+        case WM_INITDIALOG: {
+            PWSTR path = settings.getCarConfigPath();
+            if (path) {
+                SetDlgItemTextW(hDlg, IDC_CONFIG_PATH, path);
+                delete[] path;
+            }
+            return (INT_PTR)TRUE;
+        }
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+
+                case IDC_WIPE_CONFIGS:
+                    if (
+                        MessageBoxW(
+                            hDlg,
+                            L"Delete ALL saved per-car / per-track FFB configurations?\r\n\r\n"
+                            L"This cannot be undone. Your current on-track settings stay active "
+                            L"and will be saved again when you exit.",
+                            L"Wipe car configurations",
+                            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2
+                        ) == IDYES
+                    ) {
+                        if (settings.wipeCarConfigs())
+                            MessageBoxW(hDlg, L"All car / track configurations were deleted.",
+                                        L"Done", MB_ICONINFORMATION | MB_OK);
+                        else
+                            MessageBoxW(hDlg, L"Could not delete the configuration file.\r\n"
+                                        L"It may be open in another program.",
+                                        L"Error", MB_ICONERROR | MB_OK);
+                    }
+                    return (INT_PTR)TRUE;
+
+                case IDC_OPEN_CONFIG: {
+                    // Open the human-readable config so the user can manage
+                    // individual car / track entries by hand.
+                    PWSTR path = settings.getCarConfigPath();
+                    if (path) {
+                        HINSTANCE r = ShellExecuteW(hDlg, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+                        if ((INT_PTR)r <= 32)  // no association / not found - fall back to Notepad
+                            ShellExecuteW(hDlg, L"open", L"notepad.exe", path, NULL, SW_SHOWNORMAL);
+                        delete[] path;
+                    }
+                    return (INT_PTR)TRUE;
+                }
+
+                case IDC_OPEN_FOLDER: {
+                    PWSTR path = settings.getCarConfigPath();
+                    if (path) {
+                        wchar_t *slash = wcsrchr(path, L'\\');
+                        if (slash) *slash = L'\0';
+                        ShellExecuteW(hDlg, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+                        delete[] path;
+                    }
+                    return (INT_PTR)TRUE;
+                }
+
+                case IDOK:
+                case IDCANCEL:
+                    EndDialog(hDlg, LOWORD(wParam));
+                    return (INT_PTR)TRUE;
+            }
+            break;
     }
 
     return (INT_PTR)FALSE;
