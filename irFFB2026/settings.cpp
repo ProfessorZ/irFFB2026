@@ -719,7 +719,7 @@ bool Settings::wipeCarConfigs() {
     }
 
     BOOL ok = DeleteFileW(path);
-    DWORD err = GetLastError();
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();  // last-error is only meaningful on failure
     delete[] path;
 
     if (ok || err == ERROR_FILE_NOT_FOUND) {
@@ -727,7 +727,7 @@ bool Settings::wipeCarConfigs() {
         return true;
     }
 
-    text(L"Failed to wipe configurations, error %d", err);
+    text(L"Failed to wipe configurations, error %lu", err);
     return false;
 }
 
