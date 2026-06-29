@@ -5,14 +5,20 @@ components. This file documents their provenance and licensing.
 
 ## irFFB2026
 
-- Copyright (C) 2016 nlp80 and contributors; later modifications by Tom Hogue.
+- Copyright (C) 2016 nlp80 and contributors; irFFB2026 by Tom Hogue;
+  this fork maintained by ProfessorZ.
 - Licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
 
 ## Project lineage
 
-- **irFFB** by **nlp80** — https://github.com/nlp80/irFFB (GPLv3).
-  irFFB2026 inherits this license. irFFB2022 and irFFB2026 are successive
-  rewrites/evolutions of that work.
+This project is a chain of forks, each building on the last (all GPLv3):
+
+- **irFFB** by **nlp80** — https://github.com/nlp80/irFFB — the original.
+- **irFFB2022 / irFFB2026** by **Tom Hogue** — successive rewrites/evolutions
+  introducing the Pacejka-based self-aligning-torque model and the low-latency
+  360/720 Hz paths.
+- **This fork** by **ProfessorZ** — https://github.com/ProfessorZ/irFFB2026 —
+  ongoing maintenance and new features (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## Vendored third-party code
 

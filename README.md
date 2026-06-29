@@ -7,12 +7,12 @@ irFFB2026 is a nearly complete rewrite and major evolution of irFFB, delivering 
 
 ### Project Lineage & Credits
 
-This repository is a **fork** of the original irFFB project by **nlp80**.
+This repository is **ProfessorZ's fork** of **irFFB2026** by **Tom Hogue**, which is itself an evolution of the original **irFFB** by **nlp80**.
 
-- Original repository: [https://github.com/nlp80/irFFB](https://github.com/nlp80/irFFB)  
+- Original irFFB: [https://github.com/nlp80/irFFB](https://github.com/nlp80/irFFB)  
 - All foundational credit for irFFB goes to **nlp80** and early contributors.  
-- irFFB2022 (previous major update) diverged significantly with new architecture.  
-- irFFB2026 continues that path with a full rewrite of the FFB engine, focusing on realism, latency, and usability.
+- irFFB2022 / irFFB2026 by **Tom Hogue** rewrote the engine around the Pacejka self-aligning-torque model and the low-latency 360/720 Hz paths.  
+- This fork, maintained by **ProfessorZ**, continues that work with ongoing fixes and new features (see [CHANGELOG.md](CHANGELOG.md)).
 
 irFFB2026 is released under the same **GNU General Public License v3** as the original. See the [LICENSE](LICENSE) file for full details.
 
