@@ -32,7 +32,7 @@ which feeds both the executable's version resource and the About dialog.
 ### Changed
 - **About dialog**: refreshed content and corrected attribution to reflect the
   full lineage — irFFB by nlp80, irFFB2026 by Tom Hogue, this fork maintained by
-  ProfessorZ — plus the GPLv3 licence and repository link. Restored the dynamic
+  ProfessorZ — plus the GPLv3 license and repository link. Restored the dynamic
   version binding (`IDC_VERSION`) that a prior bad resource merge had reverted to
   a hard-coded "Version v1", so the About box again shows the real build version.
 - Watchdog timing uses `GetTickCount64()` rather than `QueryPerformanceCounter()`
