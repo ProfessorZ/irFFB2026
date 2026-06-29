@@ -10,6 +10,39 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-29
+
+### Added
+- **Automatic wheel reclaim**: if iRacing re-acquires the wheel device while
+  irFFB is running (which it can do regardless of the `app.ini` reset setting),
+  irFFB now detects the takeover and grabs the device back on its own — no more
+  restarting the app to get force feedback back. `readWheelThread` previously
+  only re-checked the device when the DirectInput `wheelEvent` fired, but that
+  event goes silent the moment the device is lost, so the thread could spin
+  forever without recovering. A lightweight watchdog (`WHEEL_WATCHDOG_MS`, 1 s)
+  polls the device during event silence and calls `reacquireDIDevice()` only on
+  `DIERR_INPUTLOST`/`DIERR_NOTACQUIRED`; an idle-but-healthy wheel is left alone,
+  so there is no effect on the FFB computation or feel.
+- **Tools → Options dialog**: manage the per-car/track configuration INI from
+  inside the app — wipe all saved car/track configs (with confirmation), open
+  the config file in the default editor to edit individual entries, or open its
+  containing folder. Backed by new `Settings::wipeCarConfigs()` /
+  `getCarConfigPath()` helpers.
+
+### Changed
+- **About dialog**: refreshed content and corrected attribution to reflect the
+  full lineage — irFFB by nlp80, irFFB2026 by Tom Hogue, this fork maintained by
+  ProfessorZ — plus the GPLv3 licence and repository link. Restored the dynamic
+  version binding (`IDC_VERSION`) that a prior bad resource merge had reverted to
+  a hard-coded "Version v1", so the About box again shows the real build version.
+- Watchdog timing uses `GetTickCount64()` rather than `QueryPerformanceCounter()`
+  on the idle path — ms resolution is ample for a 1 s watchdog and avoids
+  high-frequency QPC calls while the wheel is idle.
+
+### Fixed
+- `Settings::wipeCarConfigs()` reads `GetLastError()` only when `DeleteFileW`
+  fails (it is undefined on success) and formats the `DWORD` with `%lu`.
+
 ## [1.3.0] - 2026-06-27
 
 ### Added
