@@ -332,6 +332,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
     // These are now local — no statics outside guard to avoid early init issues
     LONG lastX = 0;
     LARGE_INTEGER lastTime = { 0 }, time, elapsed;
+    LARGE_INTEGER lastWheelEvent = { 0 };  // watchdog: when we last saw a wheel event
     __declspec(align(16)) float vel[DIRECT_INTERP_SAMPLES] = { 0.0f };
     __declspec(align(16)) float fd[DIRECT_INTERP_SAMPLES];
     int velIdx = 0, vi = 0, fdIdx = 0;
@@ -359,8 +360,35 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
         if (signaled != WAIT_OBJECT_0) {
+            // Watchdog: wheelEvent only fires while we still hold the device.
+            // If it stays silent the device may have been taken over (e.g.
+            // iRacing re-acquired it). Probe it and, if it has been lost,
+            // reclaim it - otherwise the thread spins here forever and the
+            // user has to restart the app to get FFB back.
+            LARGE_INTEGER nowQ;
+            QueryPerformanceCounter(&nowQ);
+            if (lastWheelEvent.QuadPart == 0 || freq.QuadPart == 0) {
+                lastWheelEvent = nowQ;  // seed on first idle tick
+            }
+            else {
+                LONGLONG silentMs =
+                    ((nowQ.QuadPart - lastWheelEvent.QuadPart) * 1000LL) / freq.QuadPart;
+                if (silentMs >= WHEEL_WATCHDOG_MS) {
+                    HRESULT pr = ffdevice->Poll();
+                    if (pr == DIERR_INPUTLOST || pr == DIERR_NOTACQUIRED) {
+                        text(L"Wheel went silent - reclaiming device from iRacing");
+                        directInputStatus = 0;
+                        reacquireDIDevice();
+                    }
+                    // Probe at a steady cadence rather than hammering Poll().
+                    lastWheelEvent = nowQ;
+                }
+            }
             continue;  // timeout → keep waiting safely
         }
+
+        // Got a wheel event - the device is alive, so reset the watchdog.
+        QueryPerformanceCounter(&lastWheelEvent);
 
         res = ffdevice->GetDeviceState(sizeof(joyState), &joyState);
         if (res != DI_OK) {

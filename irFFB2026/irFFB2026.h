@@ -104,6 +104,12 @@ extern std::atomic<bool> isHighImpact;
 #define SLEEP_SPIN_MAX_ITERATIONS   2000000     // ~50�200 ms depending on CPU speed
 #define SLEEP_SPIN_EMERGENCY_MS     1           // last-resort sleep if everything fails
 
+// If the wheel device goes silent for this long (no DirectInput state-change
+// events), readWheelThread actively probes it and reclaims it if iRacing has
+// taken it over. The event only fires while we hold the device, so without
+// this watchdog a stolen device is never noticed and the app must be restarted.
+#define WHEEL_WATCHDOG_MS           1000        // ms of event silence before probing the device
+
 
 
 
