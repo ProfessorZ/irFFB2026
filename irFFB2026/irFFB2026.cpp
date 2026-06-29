@@ -280,12 +280,14 @@ int clippingCounter = 0;  //using this to keep from reporting to fast.  Will sen
 #define FFB_GRAPH_TIMER_ID 1001       // WM_TIMER id for the graph sampler
 #define FFB_GRAPH_TIMER_MS 1000       // sample/scroll interval: one bucket per second
 
-std::atomic<int> ffbGraphPeak{ 0 };   // peak |force| since the last UI sample (IR units)
-std::atomic<int> ffbGraphClip{ 0 };   // 1 if any clip occurred since the last UI sample
+std::atomic<int>      ffbGraphPeak{ 0 };  // peak |force| since the last UI sample (IR units)
+// High 32 bits = frame count, low 32 bits = clipped frame count.
+// Packed into one atomic so the timer reads a consistent snapshot.
+std::atomic<uint64_t> ffbGraphClipPacked{ 0 };
 
 HWND ffbGraphWnd = NULL;                              // owner-painted graph child window
-static float ffbGraphPct[FFB_GRAPH_SECONDS]    = { 0 };     // peak output %, 0..100, per second
-static bool  ffbGraphClipped[FFB_GRAPH_SECONDS] = { false }; // any clip that second
+static float ffbGraphPct[FFB_GRAPH_SECONDS]     = { 0 };  // peak output %, 0..100, per second
+static float ffbGraphClipPct[FFB_GRAPH_SECONDS] = { 0 };  // clipped frames % per second
 static int   ffbGraphHead  = 0;                      // ring write position (one past newest)
 static int   ffbGraphCount = 0;                      // valid samples so far (<= FFB_GRAPH_SECONDS)
 
@@ -2215,7 +2217,7 @@ LRESULT CALLBACK ffbGraphProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     float pct = ffbGraphPct[idx];
                     if (pct < 0.0f)   pct = 0.0f;
                     if (pct > 100.0f) pct = 100.0f;
-                    bool clp = ffbGraphClipped[idx];
+                    bool clp = ffbGraphClipPct[idx] > 0.0f;
                     if (clp != clipActive) {
                         SelectObject(mem, clp ? clipPen : tracePen);
                         clipActive = clp;
@@ -2255,14 +2257,13 @@ LRESULT CALLBACK ffbGraphProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 int last = (ffbGraphHead - 1 + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
                 nowPct = ffbGraphPct[last];
             }
-            // Walk the last `count` seconds explicitly (newest backwards) so the
-            // ring-buffer wrap can't skew the percentage.
-            int clipCols = 0;
+            // Average the per-second frame-accurate clip fractions over the window.
+            float clipSum = 0.0f;
             for (int i = 0; i < count; i++) {
                 int idx = (ffbGraphHead - 1 - i + FFB_GRAPH_SECONDS) % FFB_GRAPH_SECONDS;
-                if (ffbGraphClipped[idx]) clipCols++;
+                clipSum += ffbGraphClipPct[idx];
             }
-            float clipWinPct = count > 0 ? (float)clipCols * 100.0f / (float)count : 0.0f;
+            float clipWinPct = count > 0 ? clipSum / (float)count : 0.0f;
 
             RECT tr = { mL, 2, W - mR, mT };
             wchar_t title[96];
@@ -2683,16 +2684,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_TIMER: {
             if (wParam == FFB_GRAPH_TIMER_ID) {
-                // Read-and-reset the peak level / clip flag accumulated by setFFB
+                // Read-and-reset the peak level / clip counters accumulated by setFFB
                 // since the last tick, append a one-second bucket, and scroll.
-                int peak = ffbGraphPeak.exchange(0, std::memory_order_relaxed);
-                int clip = ffbGraphClip.exchange(0, std::memory_order_relaxed);
+                // clips+frames are packed in one atomic to give a consistent snapshot.
+                int peak        = ffbGraphPeak.exchange(0, std::memory_order_relaxed);
+                uint64_t packed = ffbGraphClipPacked.exchange(0, std::memory_order_relaxed);
+                uint32_t frames = (uint32_t)(packed >> 32);
+                uint32_t clips  = (uint32_t)(packed & 0xFFFFFFFFu);
 
                 float pct = (float)peak * 100.0f / (float)IR_MAX;
                 if (pct > 100.0f) pct = 100.0f;
 
-                ffbGraphPct[ffbGraphHead] = pct;
-                ffbGraphClipped[ffbGraphHead] = (clip != 0);
+                float clipPct = frames > 0 ? (float)clips * 100.0f / (float)frames : 0.0f;
+
+                ffbGraphPct[ffbGraphHead]     = pct;
+                ffbGraphClipPct[ffbGraphHead] = clipPct;
                 ffbGraphHead = (ffbGraphHead + 1) % FFB_GRAPH_SECONDS;
                 if (ffbGraphCount < FFB_GRAPH_SECONDS) ffbGraphCount++;
 
@@ -3484,8 +3490,9 @@ static inline void feedFfbGraph(int rawForce)
            !ffbGraphPeak.compare_exchange_weak(prevPeak, lvl, std::memory_order_relaxed))
     {
     }
-    if (clipped)
-        ffbGraphClip.store(1, std::memory_order_relaxed);
+    // Increment frame count (high 32) and optionally clip count (low 32) atomically.
+    uint64_t delta = (1ULL << 32) | (clipped ? 1ULL : 0ULL);
+    ffbGraphClipPacked.fetch_add(delta, std::memory_order_relaxed);
 }
 
 // ============================================================================
