@@ -109,6 +109,8 @@ public:
     void writeGenericSettings();
     void readSettingsForCar(char*, char*);
     void writeSettingsForCar(char*, char*);
+    bool wipeCarConfigs();              // delete the per-car/track INI; true if removed or absent
+    PWSTR getCarConfigPath();           // heap copy of the INI path; caller frees with delete[]
     PWSTR getLogPath();
 
     //The use of bump refers to increment decrement by 1.  Not related to Bumps in suspsension.

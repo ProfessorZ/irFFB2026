@@ -332,6 +332,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
     // These are now local — no statics outside guard to avoid early init issues
     LONG lastX = 0;
     LARGE_INTEGER lastTime = { 0 }, time, elapsed;
+    ULONGLONG lastWheelEvent = 0;  // watchdog: GetTickCount64() ms when we last saw a wheel event
     __declspec(align(16)) float vel[DIRECT_INTERP_SAMPLES] = { 0.0f };
     __declspec(align(16)) float fd[DIRECT_INTERP_SAMPLES];
     int velIdx = 0, vi = 0, fdIdx = 0;
@@ -359,8 +360,31 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
         if (signaled != WAIT_OBJECT_0) {
+            // Watchdog: wheelEvent only fires while we still hold the device.
+            // If it stays silent the device may have been taken over (e.g.
+            // iRacing re-acquired it). Probe it and, if it has been lost,
+            // reclaim it - otherwise the thread spins here forever and the
+            // user has to restart the app to get FFB back. GetTickCount64 (ms)
+            // is plenty for a 1 s watchdog and cheaper than QPC on this hot path.
+            ULONGLONG nowMs = GetTickCount64();
+            if (lastWheelEvent == 0) {
+                lastWheelEvent = nowMs;  // seed on first idle tick
+            }
+            else if (nowMs - lastWheelEvent >= WHEEL_WATCHDOG_MS) {
+                HRESULT pr = ffdevice->Poll();
+                if (pr == DIERR_INPUTLOST || pr == DIERR_NOTACQUIRED) {
+                    text(L"Wheel went silent - reclaiming device from iRacing");
+                    directInputStatus = 0;
+                    reacquireDIDevice();
+                }
+                // Probe at a steady cadence rather than hammering Poll().
+                lastWheelEvent = nowMs;
+            }
             continue;  // timeout → keep waiting safely
         }
+
+        // Got a wheel event - the device is alive, so reset the watchdog.
+        lastWheelEvent = GetTickCount64();
 
         res = ffdevice->GetDeviceState(sizeof(joyState), &joyState);
         if (res != DI_OK) {
@@ -2509,6 +2533,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 case IDM_EXIT:
                     DestroyWindow(hWnd);
                     break;
+                case IDM_OPTIONS:
+                    DialogBox(hInst, MAKEINTRESOURCE(IDD_OPTIONS), hWnd, Options);
+                    break;
 
                 default:
                     if (HIWORD(wParam) == CBN_SELCHANGE) {
@@ -2793,6 +2820,81 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
                 return (INT_PTR)TRUE;
             }
         break;
+    }
+
+    return (INT_PTR)FALSE;
+
+}
+
+INT_PTR CALLBACK Options(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+
+    UNREFERENCED_PARAMETER(lParam);
+
+    switch (message) {
+
+        case WM_INITDIALOG: {
+            PWSTR path = settings.getCarConfigPath();
+            if (path) {
+                SetDlgItemTextW(hDlg, IDC_CONFIG_PATH, path);
+                delete[] path;
+            }
+            return (INT_PTR)TRUE;
+        }
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+
+                case IDC_WIPE_CONFIGS:
+                    if (
+                        MessageBoxW(
+                            hDlg,
+                            L"Delete ALL saved per-car / per-track FFB configurations?\r\n\r\n"
+                            L"This cannot be undone. Your current on-track settings stay active "
+                            L"and will be saved again when you exit.",
+                            L"Wipe car configurations",
+                            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2
+                        ) == IDYES
+                    ) {
+                        if (settings.wipeCarConfigs())
+                            MessageBoxW(hDlg, L"All car / track configurations were deleted.",
+                                        L"Done", MB_ICONINFORMATION | MB_OK);
+                        else
+                            MessageBoxW(hDlg, L"Could not delete the configuration file.\r\n"
+                                        L"It may be open in another program.",
+                                        L"Error", MB_ICONERROR | MB_OK);
+                    }
+                    return (INT_PTR)TRUE;
+
+                case IDC_OPEN_CONFIG: {
+                    // Open the human-readable config so the user can manage
+                    // individual car / track entries by hand.
+                    PWSTR path = settings.getCarConfigPath();
+                    if (path) {
+                        HINSTANCE r = ShellExecuteW(hDlg, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+                        if ((INT_PTR)r <= 32)  // no association / not found - fall back to Notepad
+                            ShellExecuteW(hDlg, L"open", L"notepad.exe", path, NULL, SW_SHOWNORMAL);
+                        delete[] path;
+                    }
+                    return (INT_PTR)TRUE;
+                }
+
+                case IDC_OPEN_FOLDER: {
+                    PWSTR path = settings.getCarConfigPath();
+                    if (path) {
+                        wchar_t *slash = wcsrchr(path, L'\\');
+                        if (slash) *slash = L'\0';
+                        ShellExecuteW(hDlg, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+                        delete[] path;
+                    }
+                    return (INT_PTR)TRUE;
+                }
+
+                case IDOK:
+                case IDCANCEL:
+                    EndDialog(hDlg, LOWORD(wParam));
+                    return (INT_PTR)TRUE;
+            }
+            break;
     }
 
     return (INT_PTR)FALSE;
