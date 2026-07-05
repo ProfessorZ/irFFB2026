@@ -373,7 +373,12 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         // device proactively here — re-Acquire makes irFFB the last exclusive
         // owner. Restarting the effect alone (firstAfterReacquire) is not enough
         // to win it back; only a fresh Acquire reclaims ownership from iRacing.
-        if (reacquireRequested.exchange(false)) {
+        // Cheap relaxed load first so the locked exchange only runs when a reclaim
+        // is actually pending — this is the hot polling path. The flag only
+        // signals "reclaim now" and publishes no other data, so relaxed is safe;
+        // the exchange pairs acquire with the producer's release store.
+        if (reacquireRequested.load(std::memory_order_relaxed) &&
+            reacquireRequested.exchange(false, std::memory_order_acquire)) {
             text(L"iRacing session active - reclaiming wheel");
             reacquireDIDevice();
             continue;  // reacquireDIDevice re-primes state; restart the loop cleanly
@@ -3382,8 +3387,9 @@ void reacquireDIDevice() {
     // bare Unacquire→Acquire below only reliably reclaims a device iRacing has
     // released, not one it is still actively holding. Re-asserting here mirrors
     // the known-good start-after path so we can preempt a steady-state hold.
-    if (FAILED(ffdevice->SetCooperativeLevel(mainWnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND)))
-        debug(L"SetCooperativeLevel failed during reacquire - continuing");
+    hr = ffdevice->SetCooperativeLevel(mainWnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND);
+    if (FAILED(hr))
+        text(L"SetCooperativeLevel failed during reclaim: 0x%x - continuing", hr);
     if (FAILED(ffdevice->Acquire())) {
         text(L"Reacquire failed");
         directInputStatus = 0;
