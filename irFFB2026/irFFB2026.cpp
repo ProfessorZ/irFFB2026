@@ -132,6 +132,14 @@ const int MAX_ST_SAMPLES = 32;
 volatile bool wheelAndEffectReady = false;
 std::atomic<bool> firstAfterReacquire(true);
 
+// Set by the main thread when iRacing has just (re)initialised its own FFB on
+// the wheel (new session / going on track). iRacing taking over the device this
+// way does NOT raise DIERR_INPUTLOST on our handle, so the silence watchdog
+// never fires and iRacing keeps driving the wheel — the "app started before the
+// sim" failure. readWheelThread consumes this flag and re-acquires so irFFB
+// becomes the last exclusive owner, just like a fresh launch after the sim.
+std::atomic<bool> reacquireRequested(false);
+
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
 
@@ -358,6 +366,17 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             ResetVJD(vjDev);
             vjResetDone = true;
             //debug(L"vJoy reset complete – polling begins");
+        }
+
+        // iRacing (re)initialised its FFB on the wheel (new session / on track).
+        // That takeover doesn't trip the INPUTLOST watchdog, so reclaim the
+        // device proactively here — re-Acquire makes irFFB the last exclusive
+        // owner. Restarting the effect alone (firstAfterReacquire) is not enough
+        // to win it back; only a fresh Acquire reclaims ownership from iRacing.
+        if (reacquireRequested.exchange(false)) {
+            text(L"iRacing session active - reclaiming wheel");
+            reacquireDIDevice();
+            continue;  // reacquireDIDevice re-primes state; restart the loop cleanly
         }
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
@@ -1380,6 +1399,11 @@ int APIENTRY wWinMain(
             irConnected = true;
             timeBeginPeriod(1);
 
+            // A new iRacing session means the sim just started (or restarted)
+            // after irFFB was already running. Ask readWheelThread to reclaim
+            // the wheel so irFFB — not iRacing — owns the exclusive FFB effect.
+            reacquireRequested.store(true, std::memory_order_release);
+
 
         }
        
@@ -1454,7 +1478,12 @@ int APIENTRY wWinMain(
                 resetForces();
                 firstAfterReacquire = true;
 
-                
+                // By the time the car is on track iRacing has definitely brought
+                // up its own FFB on the wheel. Reclaim once more here so irFFB is
+                // the last exclusive owner — this is the transition that reliably
+                // fixes "app started before the sim" (the connect-time reclaim can
+                // land before iRacing has grabbed the device).
+                reacquireRequested.store(true, std::memory_order_release);
 
                 onTrack = true;
                 setOnTrackStatus(onTrack);
@@ -3347,6 +3376,14 @@ void reacquireDIDevice() {
     }
     HRESULT hr;
     ffdevice->Unacquire();
+    // Re-assert exclusive cooperative level while unacquired (SetCooperativeLevel
+    // requires the device be released first). A fresh launch after the sim wins
+    // the wheel precisely because initDirectInput does this before Acquire; the
+    // bare Unacquire→Acquire below only reliably reclaims a device iRacing has
+    // released, not one it is still actively holding. Re-asserting here mirrors
+    // the known-good start-after path so we can preempt a steady-state hold.
+    if (FAILED(ffdevice->SetCooperativeLevel(mainWnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND)))
+        debug(L"SetCooperativeLevel failed during reacquire - continuing");
     if (FAILED(ffdevice->Acquire())) {
         text(L"Reacquire failed");
         directInputStatus = 0;
