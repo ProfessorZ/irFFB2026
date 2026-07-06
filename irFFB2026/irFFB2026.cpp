@@ -132,6 +132,14 @@ const int MAX_ST_SAMPLES = 32;
 volatile bool wheelAndEffectReady = false;
 std::atomic<bool> firstAfterReacquire(true);
 
+// Set by the main thread when iRacing has just (re)initialised its own FFB on
+// the wheel (new session / going on track). iRacing taking over the device this
+// way does NOT raise DIERR_INPUTLOST on our handle, so the silence watchdog
+// never fires and iRacing keeps driving the wheel — the "app started before the
+// sim" failure. readWheelThread consumes this flag and re-acquires so irFFB
+// becomes the last exclusive owner, just like a fresh launch after the sim.
+std::atomic<bool> reacquireRequested(false);
+
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
 
@@ -358,6 +366,23 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             ResetVJD(vjDev);
             vjResetDone = true;
             //debug(L"vJoy reset complete – polling begins");
+        }
+
+        // iRacing (re)initialised its FFB on the wheel (new session / on track).
+        // That takeover doesn't trip the INPUTLOST watchdog, so reclaim the
+        // device proactively here — re-Acquire makes irFFB the last exclusive
+        // owner. Restarting the effect alone (firstAfterReacquire) is not enough
+        // to win it back; only a fresh Acquire reclaims ownership from iRacing.
+        // Cheap relaxed load first so the locked exchange only runs when a reclaim
+        // is actually pending — this is the hot polling path. The flag only
+        // signals "reclaim now" and publishes no other data, so relaxed is safe;
+        // the exchange pairs acquire with the producer's release store.
+        if (reacquireRequested.load(std::memory_order_relaxed) &&
+            reacquireRequested.exchange(false, std::memory_order_acquire)) {
+            text(L"iRacing session active - reclaiming wheel");
+            debug(L"reclaim: consumer fired in readWheelThread - calling reacquireDIDevice");
+            reacquireDIDevice();
+            continue;  // reacquireDIDevice re-primes state; restart the loop cleanly
         }
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
@@ -1380,6 +1405,12 @@ int APIENTRY wWinMain(
             irConnected = true;
             timeBeginPeriod(1);
 
+            // A new iRacing session means the sim just started (or restarted)
+            // after irFFB was already running. Ask readWheelThread to reclaim
+            // the wheel so irFFB — not iRacing — owns the exclusive FFB effect.
+            reacquireRequested.store(true, std::memory_order_release);
+            debug(L"reclaim: producer requested reclaim on new-session connect");
+
 
         }
        
@@ -1454,7 +1485,13 @@ int APIENTRY wWinMain(
                 resetForces();
                 firstAfterReacquire = true;
 
-                
+                // By the time the car is on track iRacing has definitely brought
+                // up its own FFB on the wheel. Reclaim once more here so irFFB is
+                // the last exclusive owner — this is the transition that reliably
+                // fixes "app started before the sim" (the connect-time reclaim can
+                // land before iRacing has grabbed the device).
+                reacquireRequested.store(true, std::memory_order_release);
+                debug(L"reclaim: producer requested reclaim on on-track transition");
 
                 onTrack = true;
                 setOnTrackStatus(onTrack);
@@ -2455,10 +2492,12 @@ SendMessage(hTips, WM_SETFONT, (WPARAM)hTipsFont, TRUE);
     //Saving for re-enabling debug when time to code again
     //Turning off so people don't fill up their hard drives
     //Maybe put them ifdefs
-     
- //   settings.setDebugWnd(
- //       checkbox(mainWnd, L"Debug logging?", 440, 700)
-  //  );
+    // Temporarily re-enabled to diagnose the "app started before the sim" FFB
+    // reclaim: turning this on writes a timestamped log to Documents\irFFB2026-*.log
+    // capturing the reclaim producer/consumer/Acquire/GetEffectStatus probes.
+    settings.setDebugWnd(
+        checkbox(mainWnd, L"Debug logging?", 440, 700)
+    );
 
 
 
@@ -3347,8 +3386,20 @@ void reacquireDIDevice() {
     }
     HRESULT hr;
     ffdevice->Unacquire();
-    if (FAILED(ffdevice->Acquire())) {
-        text(L"Reacquire failed");
+    // Re-assert exclusive cooperative level while unacquired (SetCooperativeLevel
+    // requires the device be released first). A fresh launch after the sim wins
+    // the wheel precisely because initDirectInput does this before Acquire; the
+    // bare Unacquire→Acquire below only reliably reclaims a device iRacing has
+    // released, not one it is still actively holding. Re-asserting here mirrors
+    // the known-good start-after path so we can preempt a steady-state hold.
+    hr = ffdevice->SetCooperativeLevel(mainWnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND);
+    debug(L"reclaim: SetCooperativeLevel hr=0x%x", hr);
+    if (FAILED(hr))
+        text(L"SetCooperativeLevel failed during reclaim: 0x%x - continuing", hr);
+    HRESULT acqHr = ffdevice->Acquire();
+    debug(L"reclaim: Acquire hr=0x%x", acqHr);
+    if (FAILED(acqHr)) {
+        text(L"Reacquire failed: 0x%x", acqHr);
         directInputStatus = 0;
         return;
     }
@@ -3389,6 +3440,20 @@ void reacquireDIDevice() {
             directInputStatus = 0;
             return;
         }
+    }
+    // DIAGNOSTIC: does OUR effect actually own the wheel after the reclaim?
+    // GetEffectStatus is a different signal from Poll()/INPUTLOST (which provably
+    // never fires here). If DIEGES_PLAYING is clear, iRacing displaced our effect
+    // without us losing acquisition — the takeover signal we can react to. Also
+    // log ffbMag so we can tell "not playing" from "playing but commanding zero".
+    if (effect != nullptr) {
+        DWORD effStatus = 0;
+        HRESULT statHr = effect->GetEffectStatus(&effStatus);
+        debug(
+            L"reclaim: GetEffectStatus hr=0x%x playing=%d ffbMag=%d",
+            statHr, (effStatus & DIEGES_PLAYING) ? 1 : 0,
+            ffbMag.load(std::memory_order_acquire)
+        );
     }
     LeaveCriticalSection(&effectCrit);
     directInputStatus = 1;

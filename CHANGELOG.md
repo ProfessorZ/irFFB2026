@@ -10,6 +10,26 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+### Fixed
+- **irFFB now takes the wheel when started before the sim**: if irFFB was already
+  running when iRacing launched, iRacing would (re)initialise its own force
+  feedback on the wheel and keep driving it — you felt iRacing's native FFB, not
+  irFFB's. That takeover does **not** raise `DIERR_INPUTLOST`, so the silence
+  watchdog never fired and the on-screen status stayed quiet (irFFB still thought
+  it owned the device). irFFB now proactively re-acquires the wheel on the two
+  transitions where iRacing has just brought its FFB up — a new session
+  (`irsdk_stConnected`) and the on-track transition — via a `reacquireRequested`
+  flag consumed by `readWheelThread`. Re-`Acquire()` makes irFFB the last
+  exclusive owner, exactly like launching it after the sim (the case that already
+  worked); restarting the effect alone (`firstAfterReacquire`) was not enough to
+  reclaim ownership. `reacquireDIDevice()` now also re-asserts the exclusive
+  cooperative level (`SetCooperativeLevel`) while the device is unacquired — the
+  one step the proven start-after path (`initDirectInput`) did that the bare
+  `Unacquire`→`Acquire` reclaim omitted — so it can preempt an iRacing that is
+  still actively holding the wheel, not just one that has released it. Continuous
+  re-stealing while running is still best avoided with `resetWhenFFBLost = 0` in
+  iRacing's `app.ini`.
+
 ## [1.3.1] - 2026-06-29
 
 ### Added
