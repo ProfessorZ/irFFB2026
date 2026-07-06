@@ -57,7 +57,9 @@ extern std::atomic<bool> isHighImpact;
 #define STEER_COEFF_MIN 4.0f       // reject calibration samples outside a plausible band
 #define STEER_COEFF_MAX 80.0f
 #define STEER_COEFF_EMA 0.02f      // running-estimate convergence rate (~0.8 s of samples)
-#define STEER_COEFF_LINEAR_LATG 3.5f // only sample below ~0.36 g so slip doesn't bias K
+// LatAccel gate in m/s² (matches the SDK's LatAccel units); 3.5 m/s² ≈ 0.36 g. Only
+// sample K below this lateral load so tyre slip doesn't bias the estimate.
+#define STEER_COEFF_LINEAR_LATG 3.5f
 #define LONGLOAD_STDPOWER 4
 #define LONGLOAD_MAXPOWER 8
 #define STOPS_MAXFORCE_RAD 0.2618f // 15 deg

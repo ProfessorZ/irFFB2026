@@ -19,21 +19,40 @@ which feeds both the executable's version resource and the About dialog.
   angle, so the understeer effect saturated whenever cornering. iRacing exposes
   neither wheelbase nor steering ratio, so irFFB2026 now **self-calibrates an
   effective steering coefficient `K`** from the linear-tyre-region relationship
-  `hand_steer ≈ K * yawRate / speed` (sampled only under light lateral load,
-  `< ~0.36 g`, so tyre slip doesn't bias it). `K` bundles wheelbase and steering
-  ratio in hand-wheel units, giving a neutral-steer reference; the front slip
-  angle is now the hand angle's deviation from that reference — near zero in the
-  linear region and rising as the front washes out. `K` seeds on the first valid
-  sample, refines via a slow EMA, and re-learns on every car/session change.
-  **Behaviour note — this is not just a gain change.** The understeer *dynamics*
-  are different: the effect is now near-silent mid-corner in the linear region,
-  rises as the front actually washes out, is sensitive to corner-entry transients
-  (yaw lags steering, so `alpha_f` briefly spikes on turn-in), and — because
-  `alpha_f` is now a signed deviation — can go negative during over-rotation and
-  feed the oversteer direction. You will likely need to (a) raise the understeer
-  effect strength to match the previous peak intensity, and (b) evaluate whether
-  to gate the channel to genuine understeer only (`alpha_f * steer > 0`). Both are
-  feel decisions best made on track.
+  `hand_steer ≈ K * yawRate / speed`. `K` is sampled only under light lateral
+  load (`LatAccel < 3.5 m/s²`, ≈ 0.36 g; calibration is skipped when `LatAccel`
+  is unavailable) so tyre slip doesn't bias it, seeds on the first valid sample,
+  refines via a slow EMA, and re-learns on every car/session change. `K` bundles
+  wheelbase and steering ratio in hand-wheel units, giving a neutral-steer
+  reference; the front slip angle is now the hand angle's deviation from that
+  reference — near zero in the linear region and rising as the front washes out.
+  The understeer channel is gated to the understeer direction only
+  (`alpha_f * steer > 0`), so over-rotation no longer bleeds into the oversteer
+  path. **Behaviour note — this is not just a gain change:** the effect is now
+  near-silent mid-corner and rises as the front actually washes out, so you will
+  likely need to raise the understeer effect strength to match the previous peak
+  intensity. It is also sensitive to corner-entry transients (yaw lags steering,
+  so `alpha_f` can briefly spike on turn-in).
+
+### Fixed
+- **irFFB now takes the wheel when started before the sim**: if irFFB was already
+  running when iRacing launched, iRacing would (re)initialise its own force
+  feedback on the wheel and keep driving it — you felt iRacing's native FFB, not
+  irFFB's. That takeover does **not** raise `DIERR_INPUTLOST`, so the silence
+  watchdog never fired and the on-screen status stayed quiet (irFFB still thought
+  it owned the device). irFFB now proactively re-acquires the wheel on the two
+  transitions where iRacing has just brought its FFB up — a new session
+  (`irsdk_stConnected`) and the on-track transition — via a `reacquireRequested`
+  flag consumed by `readWheelThread`. Re-`Acquire()` makes irFFB the last
+  exclusive owner, exactly like launching it after the sim (the case that already
+  worked); restarting the effect alone (`firstAfterReacquire`) was not enough to
+  reclaim ownership. `reacquireDIDevice()` now also re-asserts the exclusive
+  cooperative level (`SetCooperativeLevel`) while the device is unacquired — the
+  one step the proven start-after path (`initDirectInput`) did that the bare
+  `Unacquire`→`Acquire` reclaim omitted — so it can preempt an iRacing that is
+  still actively holding the wheel, not just one that has released it. Continuous
+  re-stealing while running is still best avoided with `resetWhenFFBLost = 0` in
+  iRacing's `app.ini`.
 
 ## [1.3.1] - 2026-06-29
 
