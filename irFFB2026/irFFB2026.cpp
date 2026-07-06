@@ -135,6 +135,12 @@ std::atomic<bool> firstAfterReacquire(true);
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
 
+// Self-calibrating steering coefficient for the understeer front-slip proxy. Written
+// and read only on the main/telemetry thread (calibrated in the wWinMain FFB block,
+// reset on session/car change), so plain globals are sufficient — no atomics needed.
+float effectiveSteerCoeff = DEFAULT_STEER_COEFF;
+bool  steerCoeffCalibrated = false;
+
 int force = 0;
 volatile float suspForce = 0.0f; 
 
@@ -1302,6 +1308,10 @@ int APIENTRY wWinMain(
                 setCarStatus(car);
                 setTrackNameStatus(trackName);
                 settings.readSettingsForCar(car, trackName);
+                // Re-learn the steering coefficient for the new car (it bundles that
+                // car's wheelbase and steering ratio, which differ from the last one).
+                steerCoeffCalibrated = false;
+                effectiveSteerCoeff = DEFAULT_STEER_COEFF;
                 if (simHubConnectorStatus == true) updateSimHub();
             }
             else {
@@ -1675,15 +1685,47 @@ int APIENTRY wWinMain(
 
 
 
+                    // ── Self-calibrate the effective steering coefficient K ──────────
+                    // In the linear tyre region the hand-wheel angle relates to yaw by
+                    //   steer ≈ K * yawRate / speed  →  K = steer * speed / yawRate.
+                    // K bundles wheelbase AND steering ratio (iRacing exposes neither) in
+                    // hand-wheel units, giving us the neutral-steer reference used below.
+                    // Only sample under light lateral load so tyre slip doesn't bias K.
+                    {
+                        const bool linearRegion =
+                            (latAccel == nullptr) || (fabsf(*latAccel) < STEER_COEFF_LINEAR_LATG);
+
+                        if (*speed > 8.0f && fabsf(*yawRate) > 0.03f && fabsf(*steer) > 0.02f &&
+                            (*steer) * (*yawRate) > 0.0f && linearRegion &&
+                            !isHighImpact.load(std::memory_order_relaxed)) {
+
+                            float kInstant = fabsf(*steer) * (*speed) / fabsf(*yawRate);
+
+                            if (kInstant > STEER_COEFF_MIN && kInstant < STEER_COEFF_MAX) {
+                                if (!steerCoeffCalibrated) {
+                                    effectiveSteerCoeff = kInstant;  // seed on first valid sample
+                                    steerCoeffCalibrated = true;
+                                }
+                                else {
+                                    effectiveSteerCoeff = STEER_COEFF_EMA * kInstant +
+                                        (1.0f - STEER_COEFF_EMA) * effectiveSteerCoeff;
+                                }
+                            }
+                        }
+                    }
+
                     // === Understeer (Front SAT Pacejka) ===
                     float yaw_under = 0.0f;
                     if (underSteerFactor > 0.0f) {
                         // Understeer internal
                         float underInternalOffset = underSteerOffset;
 
-                        //When iRacing gives us wheelbase in telemetry
-                        // Front slip angle (alpha_f) — replace 2.7f with *wheelbase
-                        float alpha_f = *steer - (*yawRate * (2.7f / 2.0f) / *speed);
+                        // Front slip angle proxy: hand-wheel angle minus the neutral-steer
+                        // reference for this yaw/speed. effectiveSteerCoeff (learned above)
+                        // expresses that reference in hand-wheel units, so both terms share
+                        // units and alpha_f ≈ 0 in the linear region, rising as the front
+                        // washes out — a real slip-angle input rather than raw hand angle.
+                        float alpha_f = *steer - (effectiveSteerCoeff * (*yawRate) / *speed);
                         float a_af = fabsf(alpha_f);
 
                         // Tuned params
