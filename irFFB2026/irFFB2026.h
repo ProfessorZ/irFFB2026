@@ -48,6 +48,18 @@ extern std::atomic<bool> isHighImpact;
 #define PARKED_FORCE_REDUCER 4
 #define BUMPSFORCE_MULTIPLIER 1.6f
 #define LOADFORCE_MULTIPLIER 0.08f
+
+// Self-calibrating effective steering coefficient (K) for the understeer front-slip
+// proxy. iRacing exposes neither wheelbase nor steering ratio, so we learn K live from
+// the linear-tire-region relationship  hand_steer ≈ K * yawRate / speed.  K therefore
+// bundles wheelbase * steering-ratio in hand-wheel units (≈ metres, ratio-scaled).
+#define DEFAULT_STEER_COEFF 18.0f  // pre-calibration fallback (~mid-range ratio*wheelbase)
+#define STEER_COEFF_MIN 4.0f       // reject calibration samples outside a plausible band
+#define STEER_COEFF_MAX 80.0f
+#define STEER_COEFF_EMA 0.02f      // running-estimate convergence rate (~0.8 s of samples)
+// LatAccel gate in m/s² (matches the SDK's LatAccel units); 3.5 m/s² ≈ 0.36 g. Only
+// sample K below this lateral load so tyre slip doesn't bias the estimate.
+#define STEER_COEFF_LINEAR_LATG 3.5f
 #define LONGLOAD_STDPOWER 4
 #define LONGLOAD_MAXPOWER 8
 #define STOPS_MAXFORCE_RAD 0.2618f // 15 deg

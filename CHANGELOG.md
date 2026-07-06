@@ -10,6 +10,30 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+### Changed
+- **Understeer feel is now a real front-slip-angle calculation.** The front slip
+  angle previously subtracted a fixed half-wheelbase kinematic term
+  (`*steer - yawRate * (2.7/2) / speed`) from the *hand-wheel* angle. Because
+  iRacing reports the hand-wheel angle (not the road-wheel angle), that term was
+  ~1% of the input and the "slip angle" was effectively just the raw steering
+  angle, so the understeer effect saturated whenever cornering. iRacing exposes
+  neither wheelbase nor steering ratio, so irFFB2026 now **self-calibrates an
+  effective steering coefficient `K`** from the linear-tyre-region relationship
+  `hand_steer ≈ K * yawRate / speed`. `K` is sampled only under light lateral
+  load (`LatAccel < 3.5 m/s²`, ≈ 0.36 g; calibration is skipped when `LatAccel`
+  is unavailable) so tyre slip doesn't bias it, seeds on the first valid sample,
+  refines via a slow EMA, and re-learns on every car/session change. `K` bundles
+  wheelbase and steering ratio in hand-wheel units, giving a neutral-steer
+  reference; the front slip angle is now the hand angle's deviation from that
+  reference — near zero in the linear region and rising as the front washes out.
+  The understeer channel is gated to the understeer direction only
+  (`alpha_f * steer > 0`), so over-rotation no longer bleeds into the oversteer
+  path. **Behaviour note — this is not just a gain change:** the effect is now
+  near-silent mid-corner and rises as the front actually washes out, so you will
+  likely need to raise the understeer effect strength to match the previous peak
+  intensity. It is also sensitive to corner-entry transients (yaw lags steering,
+  so `alpha_f` can briefly spike on turn-in).
+
 ### Fixed
 - **irFFB now takes the wheel when started before the sim**: if irFFB was already
   running when iRacing launched, iRacing would (re)initialise its own force
