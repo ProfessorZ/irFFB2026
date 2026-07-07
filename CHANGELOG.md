@@ -83,6 +83,15 @@ which feeds both the executable's version resource and the About dialog.
   retries would then sit unrecovered until another on-track edge happened to
   re-arm it. The consumer now explicitly clears `wheelAndEffectReady` when the
   rebuild fails, handing recovery to that per-tick retry loop instead.
+- **Reclaim now skips the rebuild when we already own the wheel.** Confirmed on
+  track that the full re-init above reliably wins the wheel back from iRacing —
+  but `reacquireRequested` is re-armed on every on-track transition (pit exit,
+  tow, off-track recovery), not just "app started before the sim", so every one
+  of those was paying for a disruptive teardown+recreate even when irFFB never
+  lost the wheel. The consumer now checks `GetEffectStatus`/`DIEGES_PLAYING` on
+  the existing effect *before* touching anything; if our effect is already the
+  one driving the motor, the rebuild (and its brief FFB reset) is skipped
+  entirely.
 
 ## [1.3.1] - 2026-06-29
 
