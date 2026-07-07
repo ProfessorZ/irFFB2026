@@ -90,6 +90,14 @@ which feeds both the executable's version resource and the About dialog.
   the existing effect *before* touching anything; if our effect is already the
   one driving the motor, the rebuild (and its brief FFB reset) is skipped
   entirely.
+- **`wheelAndEffectReady` is now `std::atomic<bool>`.** It's read on
+  `wWinMain`/`readWheelThread` and written from `initDirectInput()`/
+  `releaseDirectInput()`/`reacquireDIDevice()`/the reclaim consumer above — a
+  cross-thread readiness flag that was still a plain `volatile bool`, which
+  gives no atomicity or ordering guarantee in C++ (unlike Java/C#) and is a
+  data race. It now follows the same `std::atomic` + explicit memory-order
+  pattern already used for `reacquireRequested`/`firstAfterReacquire`
+  (`memory_order_acquire` reads, `memory_order_release` writes).
 
 ## [1.3.1] - 2026-06-29
 

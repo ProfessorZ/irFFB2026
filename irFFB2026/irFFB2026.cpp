@@ -129,7 +129,12 @@ char car[MAX_CAR_NAME];
 char trackName[MAX_TRACK_NAME];
 const int MAX_ST_SAMPLES = 32;
 
-volatile bool wheelAndEffectReady = false;
+// Cross-thread readiness gate: wWinMain retries initDirectInput() while this is
+// false, and readWheelThread only polls the device while it's true. plain bool
+// (even volatile) gives no atomicity/ordering guarantee for a flag read and
+// written across threads, so this follows the same std::atomic pattern as
+// reacquireRequested/firstAfterReacquire below.
+std::atomic<bool> wheelAndEffectReady{false};
 std::atomic<bool> firstAfterReacquire(true);
 
 // Set by the main thread when iRacing has just (re)initialised its own FFB on
@@ -359,7 +364,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
     while (true) {
         // Patient wait until everything is initialized
-        if (!wheelAndEffectReady || !ffdevice || !effect) {
+        if (!wheelAndEffectReady.load(std::memory_order_acquire) || !ffdevice || !effect) {
             
             Sleep(100);  // 100 ms sleep is fine — low CPU, responsive once ready
             continue;
@@ -452,7 +457,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
                     // failed reclaim would sit unrecovered until the next on-track edge
                     // happens to re-arm reacquireRequested. Clearing it here hands recovery
                     // to that per-tick retry loop instead of waiting on another transition.
-                    wheelAndEffectReady = false;
+                    wheelAndEffectReady.store(false, std::memory_order_release);
                 }
                 firstAfterReacquire = true;
                 // Outcome probe for the debug log: reclaimed=1 means we rebuilt+acquired;
@@ -1366,13 +1371,13 @@ int APIENTRY wWinMain(
         const irsdk_header *hdr = NULL;
 
         // 1. Attempt DI init if not ready yet (retry if failed)
-        if (!wheelAndEffectReady) {
+        if (!wheelAndEffectReady.load(std::memory_order_acquire)) {
 
             initDirectInput();  // safe to call multiple times — early returns if already good
         }
 
 
-        if (!hReadWheel && wheelAndEffectReady) {
+        if (!hReadWheel && wheelAndEffectReady.load(std::memory_order_acquire)) {
             hReadWheel = CreateThread(NULL, 0, readWheelThread, NULL, 0, NULL);
             if (hReadWheel) {
                 SetThreadPriority(hReadWheel, THREAD_PRIORITY_HIGHEST);
@@ -3446,7 +3451,7 @@ void initDirectInput() {
 
     text(L"Acquired DI device with %d buttons and %d POV", numButtons, numPov);
 
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Wheel and effect fully initialized → readWheelThread can start polling");
 
     EnterCriticalSection(&effectCrit);
@@ -3469,7 +3474,7 @@ void initDirectInput() {
 
     LeaveCriticalSection(&effectCrit);
     //  Signal that polling can safely begin ───
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Wheel and effect fully initialized → readWheelThread can start polling");
 
 }
@@ -3498,7 +3503,7 @@ void releaseDirectInput() {
         pDI = nullptr;
     }
     // Pause polling during release ───
-    wheelAndEffectReady = false;
+    wheelAndEffectReady.store(false, std::memory_order_release);
     debug(L"DirectInput released → pausing readWheelThread polling");
 
 }
@@ -3587,7 +3592,7 @@ void reacquireDIDevice() {
     LeaveCriticalSection(&effectCrit);
     directInputStatus = 1;
     firstAfterReacquire = true;
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Reacquire succeeded → readWheelThread polling resumed");
 }
 
