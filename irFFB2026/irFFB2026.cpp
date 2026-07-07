@@ -385,10 +385,45 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         // the exchange pairs acquire with the producer's release store.
         if (reacquireRequested.load(std::memory_order_relaxed) &&
             reacquireRequested.exchange(false, std::memory_order_acquire)) {
-            text(L"iRacing session active - reclaiming wheel");
-            debug(L"reclaim: consumer fired in readWheelThread - calling reacquireDIDevice");
-            reacquireDIDevice();
-            continue;  // reacquireDIDevice re-primes state; restart the loop cleanly
+            text(L"iRacing session active - reclaiming wheel (full re-init)");
+            debug(L"reclaim: consumer fired in readWheelThread - full DI re-init");
+            // A bare Unacquire→Acquire of the existing device (reacquireDIDevice)
+            // returns DI_OK but does NOT wrest the wheel back from an iRacing that is
+            // actively holding it — INPUTLOST never fires, so the reused device object
+            // keeps stale arbitration state and iRacing keeps driving the motor (its FFB
+            // sliders stay editable). The one path proven to reclaim is the full
+            // teardown+recreate a fresh app launch runs — which is exactly why restarting
+            // irFFB fixes it. Do the same here. releaseDirectInput() nulls ffdevice, so
+            // initDirectInput()'s "already good" early-return is bypassed and it rebuilds
+            // the whole DirectInput + effect stack. effectCrit matches the mode-change
+            // path's locking (both helpers re-enter the recursive section internally).
+            EnterCriticalSection(&effectCrit);
+            releaseDirectInput();
+            initDirectInput();
+            // Recovery: releaseDirectInput() has already dropped the old device and
+            // initDirectInput() is not re-run per telemetry tick, so a failed rebuild
+            // would strand us with no device (worse than iRacing's FFB). Retry a few
+            // times here; the next on-track transition also re-arms this reclaim.
+            for (int attempt = 0; attempt < 5 && !(ffdevice && effect); ++attempt) {
+                Sleep(20);
+                initDirectInput();
+            }
+            const bool reclaimed = (ffdevice && effect);
+            DWORD playing = 0;
+            if (reclaimed) {
+                DWORD st = 0;
+                if (SUCCEEDED(effect->GetEffectStatus(&st)))
+                    playing = (st & DIEGES_PLAYING) ? 1 : 0;
+            }
+            LeaveCriticalSection(&effectCrit);
+            firstAfterReacquire = true;
+            // Outcome probe for the debug log: reclaimed=1 means we rebuilt+acquired;
+            // playing=1 means OUR effect is the one driving the motor after the reclaim.
+            debug(L"reclaim: full DI re-init done reclaimed=%d ffdevice=%p effect=%p playing=%d",
+                  (int)reclaimed, (void*)ffdevice, (void*)effect, (int)playing);
+            if (!reclaimed)
+                text(L"Reclaim failed to rebuild device - will retry on next on-track");
+            continue;  // state re-primed; restart the loop cleanly
         }
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
@@ -1495,11 +1530,13 @@ int APIENTRY wWinMain(
                 resetForces();
                 firstAfterReacquire = true;
 
-                // By the time the car is on track iRacing has definitely brought
-                // up its own FFB on the wheel. Reclaim once more here so irFFB is
-                // the last exclusive owner — this is the transition that reliably
-                // fixes "app started before the sim" (the connect-time reclaim can
-                // land before iRacing has grabbed the device).
+                // By the time the car is on track iRacing has definitely brought up its
+                // own FFB on the wheel, so ask readWheelThread to reclaim it. The reclaim
+                // deliberately runs on that thread (see the consumer at the top of the
+                // loop), not here: readWheelThread is the only thread that polls ffdevice,
+                // so tearing the device down there avoids racing a main-thread release
+                // against an in-flight GetDeviceState/Poll. This is the transition that
+                // reliably needs the reclaim ("irFFB started before the sim").
                 reacquireRequested.store(true, std::memory_order_release);
                 debug(L"reclaim: producer requested reclaim on on-track transition");
 

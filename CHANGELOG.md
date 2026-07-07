@@ -53,6 +53,21 @@ which feeds both the executable's version resource and the About dialog.
   still actively holding the wheel, not just one that has released it. Continuous
   re-stealing while running is still best avoided with `resetWhenFFBLost = 0` in
   iRacing's `app.ini`.
+- **Reclaim now does a full DirectInput re-init instead of a bare re-acquire**: in
+  practice the `Unacquire`→(`SetCooperativeLevel`)→`Acquire` reclaim above returned
+  `DI_OK` but still did not wrest the wheel back from an actively-holding iRacing —
+  you had to restart irFFB, and only then (a full process re-init) did it win and
+  hold FFB for the session. The `reacquireRequested` consumer in `readWheelThread`
+  now performs that same proven path — `releaseDirectInput()` then
+  `initDirectInput()` — rebuilding the whole DirectInput + effect stack (the
+  `releaseDirectInput()` nulls `ffdevice`, bypassing `initDirectInput()`'s
+  already-good early return). It runs on `readWheelThread` (the only thread that
+  polls the device) to avoid racing a teardown against an in-flight
+  `GetDeviceState`/`Poll`, retries a few times if the rebuild fails so a failed
+  reclaim can't strand the wheel, and (with debug logging on) records the outcome
+  including whether **our** effect is the one driving the motor afterwards
+  (`GetEffectStatus` `DIEGES_PLAYING`). The reactive and watchdog reclaim paths are
+  unchanged.
 
 ## [1.3.1] - 2026-06-29
 
