@@ -10,8 +10,6 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
-## [1.4.1] - 2026-07-07
-
 ### Changed
 - **Understeer feel is now a real front-slip-angle calculation.** The front slip
   angle previously subtracted a fixed half-wheelbase kinematic term

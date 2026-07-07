@@ -1569,13 +1569,11 @@ int APIENTRY wWinMain(
                 resetForces();
                 firstAfterReacquire = true;
 
-                // By the time the car is on track iRacing has definitely brought up its
-                // own FFB on the wheel, so ask readWheelThread to reclaim it. The reclaim
-                // deliberately runs on that thread (see the consumer at the top of the
-                // loop), not here: readWheelThread is the only thread that polls ffdevice,
-                // so tearing the device down there avoids racing a main-thread release
-                // against an in-flight GetDeviceState/Poll. This is the transition that
-                // reliably needs the reclaim ("irFFB started before the sim").
+                // By the time the car is on track iRacing has definitely brought
+                // up its own FFB on the wheel. Reclaim once more here so irFFB is
+                // the last exclusive owner — this is the transition that reliably
+                // fixes "app started before the sim" (the connect-time reclaim can
+                // land before iRacing has grabbed the device).
                 reacquireRequested.store(true, std::memory_order_release);
                 debug(L"reclaim: producer requested reclaim on on-track transition");
 
