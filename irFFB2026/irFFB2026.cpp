@@ -129,7 +129,12 @@ char car[MAX_CAR_NAME];
 char trackName[MAX_TRACK_NAME];
 const int MAX_ST_SAMPLES = 32;
 
-volatile bool wheelAndEffectReady = false;
+// Cross-thread readiness gate: wWinMain retries initDirectInput() while this is
+// false, and readWheelThread only polls the device while it's true. plain bool
+// (even volatile) gives no atomicity/ordering guarantee for a flag read and
+// written across threads, so this follows the same std::atomic pattern as
+// reacquireRequested/firstAfterReacquire below.
+std::atomic<bool> wheelAndEffectReady{false};
 std::atomic<bool> firstAfterReacquire(true);
 
 // Set by the main thread when iRacing has just (re)initialised its own FFB on
@@ -359,7 +364,7 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
 
     while (true) {
         // Patient wait until everything is initialized
-        if (!wheelAndEffectReady || !ffdevice || !effect) {
+        if (!wheelAndEffectReady.load(std::memory_order_acquire) || !ffdevice || !effect) {
             
             Sleep(100);  // 100 ms sleep is fine — low CPU, responsive once ready
             continue;
@@ -385,10 +390,84 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         // the exchange pairs acquire with the producer's release store.
         if (reacquireRequested.load(std::memory_order_relaxed) &&
             reacquireRequested.exchange(false, std::memory_order_acquire)) {
-            text(L"iRacing session active - reclaiming wheel");
-            debug(L"reclaim: consumer fired in readWheelThread - calling reacquireDIDevice");
-            reacquireDIDevice();
-            continue;  // reacquireDIDevice re-primes state; restart the loop cleanly
+
+            // Confirmed on track: the full rebuild below reliably wins the wheel back
+            // from iRacing. But every on-track transition (pit exit, tow, off-track
+            // recovery) re-arms this reclaim, not just "app started before the sim" —
+            // so check first whether OUR effect is already the one driving the motor;
+            // if so, skip the disruptive teardown+recreate entirely. GetEffectStatus/
+            // DIEGES_PLAYING is a direct "is this effect live" signal, independent of
+            // the stale acquired-handle state that made Poll()/INPUTLOST unreliable for
+            // detecting iRacing's takeover in the first place.
+            bool alreadyPlaying = false;
+            if (effect) {
+                EnterCriticalSection(&effectCrit);
+                DWORD preSt = 0;
+                if (effect && SUCCEEDED(effect->GetEffectStatus(&preSt)))
+                    alreadyPlaying = (preSt & DIEGES_PLAYING) != 0;
+                LeaveCriticalSection(&effectCrit);
+            }
+
+            if (alreadyPlaying) {
+                debug(L"reclaim: skipped - our effect is already playing");
+            }
+            else {
+                text(L"iRacing session active - reclaiming wheel (full re-init)");
+                debug(L"reclaim: consumer fired in readWheelThread - full DI re-init");
+                // A bare Unacquire→Acquire of the existing device (reacquireDIDevice)
+                // returns DI_OK but does NOT wrest the wheel back from an iRacing that is
+                // actively holding it — INPUTLOST never fires, so the reused device object
+                // keeps stale arbitration state and iRacing keeps driving the motor (its FFB
+                // sliders stay editable). The one path proven to reclaim is the full
+                // teardown+recreate a fresh app launch runs — which is exactly why restarting
+                // irFFB fixes it. Do the same here. releaseDirectInput() nulls ffdevice, so
+                // initDirectInput()'s "already good" early-return is bypassed and it rebuilds
+                // the whole DirectInput + effect stack. Both helpers already take effectCrit
+                // internally around their own effect touches, so we don't wrap this whole
+                // sequence in it — that would hold the lock across CreateDevice/Acquire and
+                // the retry sleeps below, needlessly blocking the main thread's FFB-mode-change
+                // path (the other effectCrit user) for the entire re-init window.
+                releaseDirectInput();
+                initDirectInput();
+                // Recovery: releaseDirectInput() has already dropped the old device and
+                // initDirectInput() is not re-run per telemetry tick, so a failed rebuild
+                // would strand us with no device (worse than iRacing's FFB). Retry a few
+                // times here; the next on-track transition also re-arms this reclaim.
+                for (int attempt = 0; attempt < 5 && !(ffdevice && effect); ++attempt) {
+                    Sleep(20);
+                    initDirectInput();
+                }
+                const bool reclaimed = (ffdevice && effect);
+                DWORD playing = 0;
+                if (reclaimed) {
+                    // Only the GetEffectStatus probe touches effect directly here, so only
+                    // it needs the lock (matches how reacquireDIDevice() guards this call).
+                    EnterCriticalSection(&effectCrit);
+                    DWORD st = 0;
+                    if (effect && SUCCEEDED(effect->GetEffectStatus(&st)))
+                        playing = (st & DIEGES_PLAYING) ? 1 : 0;
+                    LeaveCriticalSection(&effectCrit);
+                }
+                else {
+                    // initDirectInput() sets wheelAndEffectReady = true as soon as Acquire()
+                    // succeeds, before CreateEffect() — so a CreateEffect failure after a
+                    // successful Acquire can leave wheelAndEffectReady stuck true with
+                    // effect == nullptr. wWinMain's own retry loop only calls
+                    // initDirectInput() while !wheelAndEffectReady, so without this reset a
+                    // failed reclaim would sit unrecovered until the next on-track edge
+                    // happens to re-arm reacquireRequested. Clearing it here hands recovery
+                    // to that per-tick retry loop instead of waiting on another transition.
+                    wheelAndEffectReady.store(false, std::memory_order_release);
+                }
+                firstAfterReacquire = true;
+                // Outcome probe for the debug log: reclaimed=1 means we rebuilt+acquired;
+                // playing=1 means OUR effect is the one driving the motor after the reclaim.
+                debug(L"reclaim: full DI re-init done reclaimed=%d ffdevice=%p effect=%p playing=%d",
+                      (int)reclaimed, (void*)ffdevice, (void*)effect, (int)playing);
+                if (!reclaimed)
+                    text(L"Reclaim failed to rebuild device - will retry");
+            }
+            continue;  // state re-primed; restart the loop cleanly
         }
 
         DWORD signaled = WaitForSingleObject(wheelEvent, 1);
@@ -1292,13 +1371,13 @@ int APIENTRY wWinMain(
         const irsdk_header *hdr = NULL;
 
         // 1. Attempt DI init if not ready yet (retry if failed)
-        if (!wheelAndEffectReady) {
+        if (!wheelAndEffectReady.load(std::memory_order_acquire)) {
 
             initDirectInput();  // safe to call multiple times — early returns if already good
         }
 
 
-        if (!hReadWheel && wheelAndEffectReady) {
+        if (!hReadWheel && wheelAndEffectReady.load(std::memory_order_acquire)) {
             hReadWheel = CreateThread(NULL, 0, readWheelThread, NULL, 0, NULL);
             if (hReadWheel) {
                 SetThreadPriority(hReadWheel, THREAD_PRIORITY_HIGHEST);
@@ -3372,7 +3451,7 @@ void initDirectInput() {
 
     text(L"Acquired DI device with %d buttons and %d POV", numButtons, numPov);
 
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Wheel and effect fully initialized → readWheelThread can start polling");
 
     EnterCriticalSection(&effectCrit);
@@ -3395,7 +3474,7 @@ void initDirectInput() {
 
     LeaveCriticalSection(&effectCrit);
     //  Signal that polling can safely begin ───
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Wheel and effect fully initialized → readWheelThread can start polling");
 
 }
@@ -3424,7 +3503,7 @@ void releaseDirectInput() {
         pDI = nullptr;
     }
     // Pause polling during release ───
-    wheelAndEffectReady = false;
+    wheelAndEffectReady.store(false, std::memory_order_release);
     debug(L"DirectInput released → pausing readWheelThread polling");
 
 }
@@ -3513,7 +3592,7 @@ void reacquireDIDevice() {
     LeaveCriticalSection(&effectCrit);
     directInputStatus = 1;
     firstAfterReacquire = true;
-    wheelAndEffectReady = true;
+    wheelAndEffectReady.store(true, std::memory_order_release);
     debug(L"Reacquire succeeded → readWheelThread polling resumed");
 }
 

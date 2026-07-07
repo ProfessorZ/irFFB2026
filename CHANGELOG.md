@@ -10,6 +10,8 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-07-07
+
 ### Changed
 - **Understeer feel is now a real front-slip-angle calculation.** The front slip
   angle previously subtracted a fixed half-wheelbase kinematic term
@@ -53,6 +55,51 @@ which feeds both the executable's version resource and the About dialog.
   still actively holding the wheel, not just one that has released it. Continuous
   re-stealing while running is still best avoided with `resetWhenFFBLost = 0` in
   iRacing's `app.ini`.
+- **Reclaim now does a full DirectInput re-init instead of a bare re-acquire**: in
+  practice the `Unacquire`→(`SetCooperativeLevel`)→`Acquire` reclaim above returned
+  `DI_OK` but still did not wrest the wheel back from an actively-holding iRacing —
+  you had to restart irFFB, and only then (a full process re-init) did it win and
+  hold FFB for the session. The `reacquireRequested` consumer in `readWheelThread`
+  now performs that same proven path — `releaseDirectInput()` then
+  `initDirectInput()` — rebuilding the whole DirectInput + effect stack (the
+  `releaseDirectInput()` nulls `ffdevice`, bypassing `initDirectInput()`'s
+  already-good early return). It runs on `readWheelThread` (the only thread that
+  polls the device) to avoid racing a teardown against an in-flight
+  `GetDeviceState`/`Poll`, retries a few times if the rebuild fails so a failed
+  reclaim can't strand the wheel, and (with debug logging on) records the outcome
+  including whether **our** effect is the one driving the motor afterwards
+  (`GetEffectStatus` `DIEGES_PLAYING`). The reactive and watchdog reclaim paths are
+  unchanged. The re-init no longer holds `effectCrit` across the whole
+  release+recreate+retry sequence — `releaseDirectInput()`/`initDirectInput()`
+  already take it internally around their own `effect` touches, so the outer lock
+  only added needless hold time (blocking the main thread's FFB-mode-change path,
+  the other `effectCrit` user) without protecting anything; only the
+  `GetEffectStatus` probe now takes it. Also fixed a stuck-recovery case:
+  `initDirectInput()` sets `wheelAndEffectReady = true` as soon as `Acquire()`
+  succeeds, before `CreateEffect()`, so a `CreateEffect` failure after a
+  successful `Acquire` could leave `wheelAndEffectReady` stuck `true` with
+  `effect == nullptr` — since `wWinMain`'s own retry loop only calls
+  `initDirectInput()` while `!wheelAndEffectReady`, a reclaim that exhausted its
+  retries would then sit unrecovered until another on-track edge happened to
+  re-arm it. The consumer now explicitly clears `wheelAndEffectReady` when the
+  rebuild fails, handing recovery to that per-tick retry loop instead.
+- **Reclaim now skips the rebuild when we already own the wheel.** Confirmed on
+  track that the full re-init above reliably wins the wheel back from iRacing —
+  but `reacquireRequested` is re-armed on every on-track transition (pit exit,
+  tow, off-track recovery), not just "app started before the sim", so every one
+  of those was paying for a disruptive teardown+recreate even when irFFB never
+  lost the wheel. The consumer now checks `GetEffectStatus`/`DIEGES_PLAYING` on
+  the existing effect *before* touching anything; if our effect is already the
+  one driving the motor, the rebuild (and its brief FFB reset) is skipped
+  entirely.
+- **`wheelAndEffectReady` is now `std::atomic<bool>`.** It's read on
+  `wWinMain`/`readWheelThread` and written from `initDirectInput()`/
+  `releaseDirectInput()`/`reacquireDIDevice()`/the reclaim consumer above — a
+  cross-thread readiness flag that was still a plain `volatile bool`, which
+  gives no atomicity or ordering guarantee in C++ (unlike Java/C#) and is a
+  data race. It now follows the same `std::atomic` + explicit memory-order
+  pattern already used for `reacquireRequested`/`firstAfterReacquire`
+  (`memory_order_acquire` reads, `memory_order_release` writes).
 
 ## [1.3.1] - 2026-06-29
 
