@@ -395,9 +395,11 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             // teardown+recreate a fresh app launch runs — which is exactly why restarting
             // irFFB fixes it. Do the same here. releaseDirectInput() nulls ffdevice, so
             // initDirectInput()'s "already good" early-return is bypassed and it rebuilds
-            // the whole DirectInput + effect stack. effectCrit matches the mode-change
-            // path's locking (both helpers re-enter the recursive section internally).
-            EnterCriticalSection(&effectCrit);
+            // the whole DirectInput + effect stack. Both helpers already take effectCrit
+            // internally around their own effect touches, so we don't wrap this whole
+            // sequence in it — that would hold the lock across CreateDevice/Acquire and
+            // the retry sleeps below, needlessly blocking the main thread's FFB-mode-change
+            // path (the other effectCrit user) for the entire re-init window.
             releaseDirectInput();
             initDirectInput();
             // Recovery: releaseDirectInput() has already dropped the old device and
@@ -411,18 +413,32 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             const bool reclaimed = (ffdevice && effect);
             DWORD playing = 0;
             if (reclaimed) {
+                // Only the GetEffectStatus probe touches effect directly here, so only
+                // it needs the lock (matches how reacquireDIDevice() guards this call).
+                EnterCriticalSection(&effectCrit);
                 DWORD st = 0;
-                if (SUCCEEDED(effect->GetEffectStatus(&st)))
+                if (effect && SUCCEEDED(effect->GetEffectStatus(&st)))
                     playing = (st & DIEGES_PLAYING) ? 1 : 0;
+                LeaveCriticalSection(&effectCrit);
             }
-            LeaveCriticalSection(&effectCrit);
+            else {
+                // initDirectInput() sets wheelAndEffectReady = true as soon as Acquire()
+                // succeeds, before CreateEffect() — so a CreateEffect failure after a
+                // successful Acquire can leave wheelAndEffectReady stuck true with
+                // effect == nullptr. wWinMain's own retry loop only calls
+                // initDirectInput() while !wheelAndEffectReady, so without this reset a
+                // failed reclaim would sit unrecovered until the next on-track edge
+                // happens to re-arm reacquireRequested. Clearing it here hands recovery
+                // to that per-tick retry loop instead of waiting on another transition.
+                wheelAndEffectReady = false;
+            }
             firstAfterReacquire = true;
             // Outcome probe for the debug log: reclaimed=1 means we rebuilt+acquired;
             // playing=1 means OUR effect is the one driving the motor after the reclaim.
             debug(L"reclaim: full DI re-init done reclaimed=%d ffdevice=%p effect=%p playing=%d",
                   (int)reclaimed, (void*)ffdevice, (void*)effect, (int)playing);
             if (!reclaimed)
-                text(L"Reclaim failed to rebuild device - will retry on next on-track");
+                text(L"Reclaim failed to rebuild device - will retry");
             continue;  // state re-primed; restart the loop cleanly
         }
 

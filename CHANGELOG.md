@@ -69,7 +69,20 @@ which feeds both the executable's version resource and the About dialog.
   reclaim can't strand the wheel, and (with debug logging on) records the outcome
   including whether **our** effect is the one driving the motor afterwards
   (`GetEffectStatus` `DIEGES_PLAYING`). The reactive and watchdog reclaim paths are
-  unchanged.
+  unchanged. The re-init no longer holds `effectCrit` across the whole
+  release+recreate+retry sequence — `releaseDirectInput()`/`initDirectInput()`
+  already take it internally around their own `effect` touches, so the outer lock
+  only added needless hold time (blocking the main thread's FFB-mode-change path,
+  the other `effectCrit` user) without protecting anything; only the
+  `GetEffectStatus` probe now takes it. Also fixed a stuck-recovery case:
+  `initDirectInput()` sets `wheelAndEffectReady = true` as soon as `Acquire()`
+  succeeds, before `CreateEffect()`, so a `CreateEffect` failure after a
+  successful `Acquire` could leave `wheelAndEffectReady` stuck `true` with
+  `effect == nullptr` — since `wWinMain`'s own retry loop only calls
+  `initDirectInput()` while `!wheelAndEffectReady`, a reclaim that exhausted its
+  retries would then sit unrecovered until another on-track edge happened to
+  re-arm it. The consumer now explicitly clears `wheelAndEffectReady` when the
+  rebuild fails, handing recovery to that per-tick retry loop instead.
 
 ## [1.3.1] - 2026-06-29
 
