@@ -10,6 +10,42 @@ which feeds both the executable's version resource and the About dialog.
 
 ## [Unreleased]
 
+### Changed
+- **Release pipeline no longer auto-publishes on master push.** Merging to
+  `master` still builds `Release|Win32` as a compile gate, but tagging and
+  publishing a GitHub Release now requires a manual `workflow_dispatch` run
+  against a protected `release` environment. This prevents a broken or
+  unreviewed binary from being released automatically. The published artifact
+  is now a zip containing the executable, `LICENSE`, `CREDITS.md`, and
+  `README.md` (previously a bare `.exe` with no license notices).
+- **`version.h` now actually feeds the executable's version resource.** Despite
+  the 1.2.2 changelog claiming `version.h` was wired into `irFFB.rc`, the RC
+  file still hard-coded `FILEVERSION 2026,0,0,1` and `ProductVersion
+  "2026.0.0.1"` while `version.h` declared `1.4.2`. The RC now `#include`s
+  `version.h` and uses `IRFFB_VER_FILEVERSION` / `IRFFB_VERSION_STR` for all
+  version fields. CI verifies the compiled PE version matches `version.h`
+  before staging.
+- **Removed broken x64 application configurations.** The x64 project
+  configurations lacked the DirectInput/Shlwapi/Common-Controls link
+  dependencies present in Win32 and could not link. They are removed from the
+  `.vcxproj`; the solution still offers `Debug|x64` / `Release|x64` selectors
+  but maps them to Win32 builds so an accidental x64 selection still compiles.
+- **Fixed `Debug|Win32` solution mapping.** `Debug|Win32` was mapped to
+  `Debug|x64` (with no `.Build.0` entry), so "Build Solution" with that
+  configuration produced no executable. It now maps to `Debug|Win32` and is
+  buildable.
+- **Removed explicit `msvcrt.lib` from link dependencies.** Both Debug and
+  Release Win32 explicitly linked `msvcrt.lib` (the retail CRT) alongside the
+  debug CRT in Debug builds, causing LNK4098 conflicts. The `RuntimeLibrary`
+  setting now selects the correct CRT automatically.
+- **Disabled stray `/PROFILE` in Release|Win32.** `Profile=true` implies
+  `/DEBUG:FULL` and `/OPT:NOICF`, contradicting the release settings
+  (`GenerateDebugInformation=No`, `EnableCOMDATFolding=true`). Removed.
+
+### Fixed
+- `LegalCopyright` in the version resource now reads "Copyright (C) 2016 nlp80
+  and contributors" instead of the placeholder "Copyright (C) 2026".
+
 ## [1.4.2] - 2026-07-07
 
 ### Changed

@@ -20,8 +20,9 @@ built with Visual Studio; there is no cross-platform or command-line-only build.
 
 1. Open `irFFB2026.sln` in Visual Studio 2022.
 2. Select a configuration. **`Release|Win32`** is the canonical configuration
-   (it is the one with per-file build settings authored in the project; note the
-   solution maps `Debug|Win32` to the `Debug|x64` project configuration).
+   (the only one with link dependencies wired up). `Debug|Win32` also builds.
+   The solution offers `x64` platform selectors, but they map to the Win32
+   project configurations — there is no native x64 application build.
 3. Build → Build Solution (`Ctrl+Shift+B`).
 4. The executable is produced in the standard Visual Studio output folder for the
    chosen configuration (e.g. `Release/irFFB2026.exe`).

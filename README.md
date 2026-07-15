@@ -29,7 +29,7 @@ Key aspects of the implementation:
 
 ### Key Features
 
-- **Ultra-low latency Game modes** (360 Hz & 720 Hz) — vJoy optional, precise timing via sleepSpinUntil and NtDelayExecution
+- **Ultra-low latency Game modes** (360 Hz & 720 Hz) — require vJoy; the irFFB modes (360/720 Hz smoothing) do not need vJoy. Precise timing via sleepSpinUntil and NtDelayExecution
 - **Auto Tune** — Automatically raises Max Force to eliminate clipping (learns stable values over clean laps)
 - **SimHub integration** — In-car button bindings (Max Force, FFB Effects, Damping, Bumps, Auto Tune toggle) + overlays for clipping %, oversteer/understeer intensity
 - **Impact force reduction** — Attenuates FFB during high-G spikes
