@@ -84,7 +84,6 @@ jobs:
           $prodVer = "$($info.ProductMajorPart).$($info.ProductMinorPart).$($info.ProductBuildPart).$($info.ProductPrivatePart)"
           Write-Host "PE FileVersion=$fileVer ProductVersion=$prodVer version.h=$ver"
           if ($fileVer -ne $prodVer) { throw "FileVersion ($fileVer) != ProductVersion ($prodVer)" }
-          $expected = $ver -replace '^\d+\.\d+\.', ''
           # Accept either "1.4.2.0" style or "1.4.2" style; require major.minor.patch agreement.
           $parts = $ver.Split('.')
           $peParts = @($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
@@ -130,7 +129,10 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          persist-credentials: false
+          # The release job must push a tag, so it needs the GITHUB_TOKEN
+          # persisted in the git remote. The build job above uses
+          # persist-credentials: false because it never pushes.
+          persist-credentials: true
 
       - name: Download package
         uses: actions/download-artifact@v4
@@ -145,7 +147,7 @@ jobs:
           zip=$(find dist -name '*.zip' | head -1)
           if [ -z "$zip" ]; then echo "::error::No zip in package"; exit 1; fi
           unzip -l "$zip"
-          for required in irFFB2026.exe LICENSE CREDITS.md; do
+          for required in irFFB2026.exe LICENSE CREDITS.md README.md; do
             if ! unzip -l "$zip" | grep -q "$required"; then
               echo "::error::Package missing required file: $required"
               exit 1
