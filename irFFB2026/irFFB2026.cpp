@@ -145,6 +145,16 @@ std::atomic<bool> firstAfterReacquire(true);
 // becomes the last exclusive owner, just like a fresh launch after the sim.
 std::atomic<bool> reacquireRequested(false);
 
+// Companion to reacquireRequested: when true the pending reclaim must run the
+// full DI re-init even if GetEffectStatus says our effect is playing. After
+// iRacing restarts, our stale effect handle keeps reporting DIEGES_PLAYING
+// (with ffbMag=0) even though iRacing's fresh exclusive acquire owns the
+// motor — the same blindness that makes Poll()/INPUTLOST miss the takeover.
+// So the "already playing" skip is only trustworthy for reclaims re-armed by
+// routine on-track transitions within a session (pit exit, tow); the sim-
+// (re)start producers set this flag to bypass it.
+std::atomic<bool> reacquireForced(false);
+
 float* speed = nullptr;
 float* latAccel = nullptr, * longAccel = nullptr;
 
@@ -391,16 +401,22 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
         if (reacquireRequested.load(std::memory_order_relaxed) &&
             reacquireRequested.exchange(false, std::memory_order_acquire)) {
 
-            // Confirmed on track: the full rebuild below reliably wins the wheel back
-            // from iRacing. But every on-track transition (pit exit, tow, off-track
-            // recovery) re-arms this reclaim, not just "app started before the sim" —
-            // so check first whether OUR effect is already the one driving the motor;
-            // if so, skip the disruptive teardown+recreate entirely. GetEffectStatus/
-            // DIEGES_PLAYING is a direct "is this effect live" signal, independent of
-            // the stale acquired-handle state that made Poll()/INPUTLOST unreliable for
-            // detecting iRacing's takeover in the first place.
+            // Was this reclaim armed by a sim (re)start? Consume the force flag
+            // either way so it can't leak into a later, unrelated reclaim.
+            bool forced = reacquireForced.exchange(false, std::memory_order_acquire);
+
+            // The full rebuild below reliably wins the wheel back from iRacing.
+            // But every on-track transition (pit exit, tow, off-track recovery)
+            // re-arms this reclaim, not just "app started before the sim" — so for
+            // those routine re-arms check first whether OUR effect is already the
+            // one driving the motor and skip the disruptive teardown+recreate.
+            // GetEffectStatus/DIEGES_PLAYING is only trustworthy while we still
+            // own the device, though: after iRacing restarts, the stale handle
+            // keeps reporting playing=1 while iRacing drives the motor. Forced
+            // reclaims (sim connect / first on-track after connect) therefore
+            // bypass this check entirely.
             bool alreadyPlaying = false;
-            if (effect) {
+            if (!forced && effect) {
                 EnterCriticalSection(&effectCrit);
                 DWORD preSt = 0;
                 if (effect && SUCCEEDED(effect->GetEffectStatus(&preSt)))
@@ -413,7 +429,8 @@ DWORD WINAPI readWheelThread(LPVOID lParam) {
             }
             else {
                 text(L"iRacing session active - reclaiming wheel (full re-init)");
-                debug(L"reclaim: consumer fired in readWheelThread - full DI re-init");
+                debug(L"reclaim: consumer fired in readWheelThread - full DI re-init forced=%d",
+                      (int)forced);
                 // A bare Unacquire→Acquire of the existing device (reacquireDIDevice)
                 // returns DI_OK but does NOT wrest the wheel back from an iRacing that is
                 // actively holding it — INPUTLOST never fires, so the reused device object
@@ -1218,6 +1235,10 @@ int APIENTRY wWinMain(
     HANDLE handles[1];
     char *data = nullptr;
     bool irConnected = false;
+    // Main-thread-only: arms a forced (skip-check-bypassing) wheel reclaim on
+    // the first on-track transition after each iRacing connect — the point
+    // where iRacing has definitely brought up its own FFB on the wheel.
+    bool forceReclaimOnNextOnTrack = false;
     MSG msg;
 
     
@@ -1497,8 +1518,15 @@ int APIENTRY wWinMain(
             // A new iRacing session means the sim just started (or restarted)
             // after irFFB was already running. Ask readWheelThread to reclaim
             // the wheel so irFFB — not iRacing — owns the exclusive FFB effect.
+            // Force it: after a sim restart our stale effect handle still
+            // reports DIEGES_PLAYING, so the consumer's "already playing" skip
+            // would otherwise swallow exactly the reclaim that matters. Also
+            // force the first on-track reclaim of this session, because this
+            // connect-time one can land before iRacing has grabbed the device.
+            reacquireForced.store(true, std::memory_order_release);
             reacquireRequested.store(true, std::memory_order_release);
-            debug(L"reclaim: producer requested reclaim on new-session connect");
+            forceReclaimOnNextOnTrack = true;
+            debug(L"reclaim: producer requested forced reclaim on new-session connect");
 
 
         }
@@ -1578,7 +1606,15 @@ int APIENTRY wWinMain(
                 // up its own FFB on the wheel. Reclaim once more here so irFFB is
                 // the last exclusive owner — this is the transition that reliably
                 // fixes "app started before the sim" (the connect-time reclaim can
-                // land before iRacing has grabbed the device).
+                // land before iRacing has grabbed the device). The first on-track
+                // reclaim of a session is forced past the "already playing" skip
+                // for the same reason as the connect-time one; later transitions
+                // (pit exit, tow) keep the cheap skip since we already own the
+                // wheel by then.
+                if (forceReclaimOnNextOnTrack) {
+                    forceReclaimOnNextOnTrack = false;
+                    reacquireForced.store(true, std::memory_order_release);
+                }
                 reacquireRequested.store(true, std::memory_order_release);
                 debug(L"reclaim: producer requested reclaim on on-track transition");
 
