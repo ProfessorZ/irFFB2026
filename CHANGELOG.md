@@ -46,6 +46,25 @@ which feeds both the executable's version resource and the About dialog.
 - `LegalCopyright` in the version resource now reads "Copyright (C) 2016 nlp80
   and contributors" instead of the placeholder "Copyright (C) 2026".
 
+## [1.4.3] - 2026-07-27
+
+### Fixed
+- **FFB control is now reclaimed after a sim restart without restarting irFFB.**
+  The 1.4.2 "skip the reclaim when our effect is already playing" optimisation
+  turned out to swallow exactly the reclaim it was meant to protect: after
+  iRacing restarts and takes exclusive ownership of the wheel, irFFB's stale
+  effect handle still reports `DIEGES_PLAYING` (while `ffbMag` reads 0), so
+  every reclaim request — new-session connect and the on-track transition —
+  was skipped and the user had to restart irFFB to get FFB back. The
+  `GetEffectStatus` probe is blind to iRacing's takeover for the same reason
+  `Poll()`/`DIERR_INPUTLOST` were. Reclaims armed by a sim (re)start — the
+  new-session connect and the *first* on-track transition of each session —
+  are now **forced** past the "already playing" skip and always run the full
+  DirectInput re-init. Later on-track transitions within the same session
+  (pit exit, tow, off-track recovery) keep the cheap skip, so the fix does
+  not reintroduce the disruptive rebuild on every pit exit that the skip was
+  added to avoid.
+
 ## [1.4.2] - 2026-07-07
 
 ### Changed
