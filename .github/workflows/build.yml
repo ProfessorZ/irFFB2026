@@ -23,10 +23,11 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      # Release|Win32 is the canonical configuration: it is the only one with the
-      # link dependencies (dinput8/dxguid/shlwapi/comctl32/winhttp/...) wired up.
-      # dinput8.lib / dxguid.lib ship in the modern Windows SDK on the runner, so
-      # the legacy DXSDK library path is not needed.
+      # Release|Win32 is the canonical shipping configuration; Debug|Win32 also
+      # has all link dependencies wired up (dinput8/dxguid/shlwapi/comctl32/
+      # winhttp/...) and is used for development builds. dinput8.lib / dxguid.lib
+      # ship in the modern Windows SDK on the runner, so the legacy DXSDK library
+      # path is not needed.
       - name: Build (Release|Win32)
         run: msbuild irFFB2026.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=Win32
 
