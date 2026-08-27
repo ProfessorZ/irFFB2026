@@ -4,7 +4,7 @@ Thanks for helping improve irFFB2026! A few notes specific to this project.
 
 ## Workflow
 
-1. Create a feature branch from the development branch.
+1. Create a feature branch from `master`.
 2. Make focused changes and build **`Release|Win32`** in Visual Studio 2022
    (see [BUILDING.md](BUILDING.md)).
 3. Update [`CHANGELOG.md`](CHANGELOG.md), and bump

@@ -1,25 +1,25 @@
 name: Release
 
-# Fully automated release pipeline.
+# Release pipeline for irFFB2026.
 #
-# Flow: bump irFFB2026/version.h -> merge to master. This workflow then:
-#   1. builds Release|Win32 once (the master compile gate),
-#   2. derives the tag "v<IRFFB_VERSION_STR>" from version.h,
-#   3. if that tag does not already exist, creates & pushes it and publishes a
-#      GitHub release with the built irFFB2026.exe attached.
+# Safety policy: pushes to master no longer auto-publish a release. The build
+# job still runs on every master push (and on PRs) as a compile gate, but
+# tagging and publishing a GitHub Release is a manual, reviewable step:
 #
-# If version.h still carries a version that is already tagged, the build job
-# still runs (gating master) but no new tag or release is produced - so ordinary
-# master pushes are idempotent. A manual run can force a (re)release of whatever
-# version.h currently holds.
+#   1. A maintainer runs this workflow on the commit to release
+#      (Actions tab -> Run workflow -> optionally check "force").
+#   2. The release job requires the protected "release" environment, so an
+#      approver must approve before any tag is created or asset uploaded.
+#   3. The published package is a zip containing the executable plus the GPL
+#      LICENSE and third-party notices required for binary redistribution.
 #
-# Note: the tag is created with GITHUB_TOKEN inside this same run on purpose. A
-# tag pushed by GITHUB_TOKEN does not trigger further workflow runs, so tagging
-# and releasing must live together here rather than in a separate tag-listening
-# workflow.
+# Deriving the tag from version.h keeps releases traceable: if version.h still
+# carries a version whose tag exists and resolves to a different commit, the
+# run fails rather than attaching a freshly built exe to a stale tag.
 on:
   push:
     branches: [ master ]
+  pull_request:
   workflow_dispatch:
     inputs:
       force:
@@ -28,7 +28,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -44,6 +44,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Resolve version & decide whether to release
         id: ver
@@ -67,42 +68,92 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      # Release|Win32 is the canonical configuration: it is the only one with the
-      # link dependencies (dinput8/dxguid/shlwapi/comctl32/winhttp/...) wired up.
+      # Release|Win32 is the canonical shipping configuration; Debug|Win32 also
+      # has all link dependencies wired up (dinput8/dxguid/shlwapi/comctl32/winhttp/...).
       - name: Build (Release|Win32)
         run: msbuild irFFB2026.sln /m /verbosity:minimal /p:Configuration=Release /p:Platform=Win32
 
-      - name: Stage artifact
+      - name: Verify version resource matches version.h
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $exe = Get-ChildItem -Recurse -Filter irFFB2026.exe | Select-Object -First 1
+          if (-not $exe) { throw "irFFB2026.exe not found" }
+          $info = (Get-Item $exe.FullName).VersionInfo
+          $fileVer = "$($info.FileMajorPart).$($info.FileMinorPart).$($info.FileBuildPart).$($info.FilePrivatePart)"
+          $prodVer = "$($info.ProductMajorPart).$($info.ProductMinorPart).$($info.ProductBuildPart).$($info.ProductPrivatePart)"
+          Write-Host "PE FileVersion=$fileVer ProductVersion=$prodVer version.h=$ver"
+          if ($fileVer -ne $prodVer) { throw "FileVersion ($fileVer) != ProductVersion ($prodVer)" }
+          # Accept either "1.4.2.0" style or "1.4.2" style; require major.minor.patch agreement.
+          $parts = $ver.Split('.')
+          $peParts = @($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart)
+          for ($i = 0; $i -lt 3 -and $i -lt $parts.Length; $i++) {
+            if ([int]$peParts[$i] -ne [int]$parts[$i]) {
+              throw "PE version component $i ($($peParts[$i])) != version.h component ($($parts[$i]))"
+            }
+          }
+          Write-Host "Version resource is consistent with version.h"
+
+      - name: Stage package
         shell: pwsh
         run: |
           $exes = Get-ChildItem -Recurse -Filter irFFB2026.exe
           if ($exes.Count -ne 1) { throw "Expected exactly 1 irFFB2026.exe, found $($exes.Count)" }
-          Copy-Item $exes[0].FullName irFFB2026.exe -Force
+          $stage = "stage"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $exes[0].FullName "$stage/irFFB2026.exe" -Force
+          Copy-Item README.md "$stage/" -Force
+          Copy-Item LICENSE "$stage/" -Force
+          Copy-Item CREDITS.md "$stage/" -Force
+          if (Test-Path THIRD_PARTY_NOTICES.md) { Copy-Item THIRD_PARTY_NOTICES.md "$stage/" -Force }
+          Compress-Archive -Path "$stage/*" -DestinationPath "irFFB2026-${{ steps.ver.outputs.version }}-win32.zip" -Force
 
-      - name: Upload executable
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: irFFB2026-Release-Win32
-          path: irFFB2026.exe
+          path: irFFB2026-${{ steps.ver.outputs.version }}-win32.zip
           if-no-files-found: error
 
   release:
     name: Tag & publish
     needs: build
-    if: needs.build.outputs.should_release == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.build.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
+          # The release job must push a tag, so it needs the GITHUB_TOKEN
+          # persisted in the git remote. The build job above uses
+          # persist-credentials: false because it never pushes.
+          persist-credentials: true
 
-      - name: Download executable
+      - name: Download package
         uses: actions/download-artifact@v4
         with:
           name: irFFB2026-Release-Win32
           path: dist
+
+      - name: Verify package contents
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          zip=$(find dist -name '*.zip' | head -1)
+          if [ -z "$zip" ]; then echo "::error::No zip in package"; exit 1; fi
+          unzip -l "$zip"
+          for required in irFFB2026.exe LICENSE CREDITS.md README.md; do
+            if ! unzip -l "$zip" | grep -q "$required"; then
+              echo "::error::Package missing required file: $required"
+              exit 1
+            fi
+          done
+          echo "Package contents verified."
 
       - name: Create & push tag
         env:
@@ -110,10 +161,6 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            # Only reachable on a forced run (the unforced path is gated out when
-            # the tag already exists). Refuse to publish the freshly built exe
-            # under a tag that resolves to a different commit - that would break
-            # traceability between the release asset and its source.
             existing="$(git rev-list -n 1 "${TAG}")"
             if [ "${existing}" != "${GITHUB_SHA}" ]; then
               echo "::error::Tag ${TAG} already exists at ${existing}, which differs from the commit being released (${GITHUB_SHA})."
@@ -135,6 +182,6 @@ jobs:
           tag_name: ${{ needs.build.outputs.tag }}
           name: irFFB2026 ${{ needs.build.outputs.tag }}
           body_path: CHANGELOG.md
-          files: dist/irFFB2026.exe
+          files: dist/*.zip
           draft: false
           prerelease: false
